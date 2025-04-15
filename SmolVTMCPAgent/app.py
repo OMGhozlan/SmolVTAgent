@@ -41,12 +41,70 @@ st.set_page_config(page_title="Chat & File Reputation", layout="wide")
 st.title("💬 Chat with Ollama & 🔬 Check File Reputation (via FastMCP)")
 st.caption(f"Using {OLLAMA_MODEL_ID} via {OLLAMA_API_BASE}. Provide a file hash for VirusTotal check using the FastMCP tool server.")
 
+#  Advanced Persistent Memory Option 
+from chat_memory import save_chat_history, load_chat_history, list_sessions, set_session_name, get_session_name
+import uuid
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+# Sidebar: Advanced Memory
+st.sidebar.markdown("")
+advanced_memory_enabled = st.sidebar.checkbox("Enable Advanced Memory (persistent)", value=True, key="advanced_memory")
+
+#  Sidebar: Name Current Session 
+if advanced_memory_enabled:
+    current_name = get_session_name(st.session_state.session_id)
+    new_name = st.sidebar.text_input("Session Name", value=current_name, key="session_name_input")
+    if new_name and new_name != current_name:
+        set_session_name(st.session_state.session_id, new_name)
+        current_name = new_name
+
+#  Sidebar: Previous Chats 
+if advanced_memory_enabled:
+    st.sidebar.markdown("**Previous Chats:**")
+    all_sessions = list_sessions()
+    if all_sessions:
+        session_labels = []
+        for sid in all_sessions:
+            name = get_session_name(sid)
+            label = name if name else f"{sid[:8]}..."
+            session_labels.append(label)
+        selected_idx = st.sidebar.selectbox("Select chat to view", options=list(range(len(all_sessions))), format_func=lambda i: session_labels[i], key="prev_chat_select")
+        selected_session_id = all_sessions[selected_idx]
+        if st.sidebar.button("Recall this chat", key="recall_chat"):
+            st.session_state.session_id = selected_session_id
+            st.session_state.messages = load_chat_history(selected_session_id)
+            st.rerun()
+        # Show last N messages
+        prev_history = load_chat_history(selected_session_id)
+        N = 8
+        # Ensure prev_history is a list
+        if not isinstance(prev_history, list):
+            prev_history = []
+        with st.sidebar.expander("Recent messages", expanded=False):
+            for m in prev_history[-N:]:
+                role = m.get("role", "user")
+                st.markdown(f"- **{role.capitalize()}**: {m.get('content','')[:60]}{'...' if len(m.get('content',''))>60 else ''}")
+    else:
+        st.sidebar.caption("No previous chats found.")
+
+# Load chat history from disk if advanced memory is enabled
+if advanced_memory_enabled:
+    loaded_history = load_chat_history(st.session_state.session_id)
+    if loaded_history:
+        st.session_state.messages = loaded_history
+        logger.info(f"Loaded persistent chat history for session {st.session_state.session_id}")
+    elif "messages" not in st.session_state:
+        st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
+        logger.info("Chat history initialized.")
+else:
+    if "messages" not in st.session_state:
+        st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
+        logger.info("Chat history initialized.")
+
 # Initialization 
 # Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
-    logger.info("Chat history initialized.")
-
 # Initialize server status check
 if 'server_status' not in st.session_state:
     st.session_state.server_status = check_server_status()
@@ -218,6 +276,10 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # React to user input
+from collections import OrderedDict
+if "checked_hashes" not in st.session_state or not isinstance(st.session_state.checked_hashes, OrderedDict):
+    st.session_state.checked_hashes = OrderedDict()
+
 if prompt := st.chat_input("Ask something or enter a file hash..."):
     # Add user message to state and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -225,26 +287,41 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
         st.markdown(prompt)
     logger.info(f"User input received: {prompt}")
 
+    # Save chat history if advanced memory is enabled
+    if advanced_memory_enabled:
+        save_chat_history(st.session_state.session_id, st.session_state.messages)
+
     # Check if agent is available before proceeding
     if not agent_instance or not agent_instance.chain:
         st.error("Chat agent is not available. Cannot process request.", icon="⚠️")
         logger.error("Agent instance or chain not available when processing user input.")
         # Don't st.stop() here, let the message be displayed
     else:
-        # If the prompt is a hash, call FastMCP directly for reputation
+        # If the prompt is a hash, call FastMCP directly for reputation, but only once per unique hash
         if hasattr(agent_instance, 'is_valid_hash') and agent_instance.is_valid_hash(prompt):
             with st.chat_message("assistant"):
                 message_placeholder = st.empty()
                 message_placeholder.markdown("Checking hash reputation via MCP...")
                 try:
-                    result = check_hash_sync(prompt)
+                    hash_key = prompt.strip().lower()
+                    if hash_key in st.session_state.checked_hashes:
+                        result = st.session_state.checked_hashes[hash_key]
+                        logger.info(f"Reusing cached VT result for hash {hash_key}")
+                    else:
+                        result = check_hash_sync(prompt)
+                        st.session_state.checked_hashes[hash_key] = result
+                        logger.info(f"Queried VT for new hash {hash_key}")
                     message_placeholder.markdown(str(result))
                     st.session_state.messages.append({"role": "assistant", "content": str(result)})
+                    if advanced_memory_enabled:
+                        save_chat_history(st.session_state.session_id, st.session_state.messages)
                 except Exception as e:
                     logger.error(f"Error during MCP hash check: {e}", exc_info=True)
                     error_message = f"Sorry, error checking hash reputation: {str(e)}"
                     message_placeholder.error(error_message, icon="💥")
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
+                    if advanced_memory_enabled:
+                        save_chat_history(st.session_state.session_id, st.session_state.messages)
         else:
             # Get response from the agent as before
             with st.chat_message("assistant"):
@@ -256,11 +333,25 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
                     rag_context = ""
                     rag_references = None
                     rag_reference_sources = None
+
+                    #  Advanced Memory: Prepend chat history to prompt 
+                    if advanced_memory_enabled:
+                        # Use last N messages or a summary
+                        N = 8
+                        history = st.session_state.messages[-N:]
+                        # Format history as a chat transcript
+                        history_str = "\n".join([
+                            f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]  # exclude current user prompt
+                        ])
+                        context_prompt = f"Conversation so far:\n{history_str}\nUser: {prompt}"
+                    else:
+                        context_prompt = prompt
+
                     if "rag_vectorstore" in st.session_state and st.session_state.rag_vectorstore and prompt:
                         docs = st.session_state.rag_vectorstore.similarity_search(prompt, k=3)
                         rag_context = "\n\n".join([doc.page_content for doc in docs])
                         if rag_context:
-                            prompt = f"Context:\n{rag_context}\n\nUser: {prompt}"
+                            context_prompt = f"Context:\n{rag_context}\n\n{context_prompt}"
                             # Prepare references for UI
                             rag_references = docs
                             # Try to find the source file for each doc chunk by matching content
@@ -273,7 +364,7 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
                                     source = "[Unknown]"
                                 rag_reference_sources.append(source)
 
-                    agent_response_text = agent_instance.run(prompt)
+                    agent_response_text = agent_instance.run(context_prompt, hash_cache=st.session_state.checked_hashes, max_cache_size=100)
                     logger.info(f"Agent response received.")
 
                     # Show <think>...</think> as a collapsible section if present
@@ -298,10 +389,14 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
                             st.markdown(refs_md)
 
                     st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
+                    if advanced_memory_enabled:
+                        save_chat_history(st.session_state.session_id, st.session_state.messages)
                 except Exception as e:
                     logger.error(f"Error during agent execution: {e}", exc_info=True)
                     error_message = f"Sorry, I encountered an error processing your request: {str(e)}"
                     message_placeholder.error(error_message, icon="💥")
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
+                    if advanced_memory_enabled:
+                        save_chat_history(st.session_state.session_id, st.session_state.messages)
 
 logger.info("Streamlit app finished processing request or waiting for input.")

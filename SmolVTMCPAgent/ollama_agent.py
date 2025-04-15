@@ -12,6 +12,7 @@ from config import OLLAMA_MODEL_ID, OLLAMA_API_BASE # Assuming these are still i
 from vt_helper import is_valid_hash, format_vt_result # Keep format_vt_result here for now
 
 import re
+from collections import OrderedDict
 
 def extract_hashes(text):
     """Extract all valid MD5, SHA1, or SHA256 hashes from the input text."""
@@ -164,10 +165,16 @@ class VirusTotalOllamaAgent:
             logger.warning(f"Failed to call Malpedia tool for {family_name}: {e}")
             return {"summary": None, "url": None, "error": str(e)}
 
-    def run(self, user_input: str) -> str:
-        """Process user input, checking for any hashes and summarizing results if found. If malicious, search Malpedia for family writeups."""
+    from collections import OrderedDict
+    def run(self, user_input: str, hash_cache=None, max_cache_size=100) -> str:
+        """Process user input, checking for any hashes and summarizing results if found. If malicious, search Malpedia for family writeups. Uses LRU cache for hash results."""
         if not self.chain:
             return "Error: LLM is not initialized. Cannot process request."
+
+        if hash_cache is None:
+            hash_cache = OrderedDict()
+        elif not isinstance(hash_cache, OrderedDict):
+            hash_cache = OrderedDict(hash_cache)
 
         cleaned_input = user_input.strip()
         hashes = extract_hashes(cleaned_input)
@@ -177,7 +184,15 @@ class VirusTotalOllamaAgent:
         if hashes:
             tool_results = []
             for h in hashes:
-                tool_result = self._call_fastmcp_tool(h)
+                h_key = h.strip().lower()
+                if h_key in hash_cache:
+                    tool_result = hash_cache[h_key]
+                    hash_cache.move_to_end(h_key)
+                else:
+                    tool_result = self._call_fastmcp_tool(h)
+                    hash_cache[h_key] = tool_result
+                    if len(hash_cache) > max_cache_size:
+                        hash_cache.popitem(last=False)
                 tool_results.append(f"Hash `{h}`: {tool_result}")
                 # If malicious, try to extract family and search Malpedia (via MCP tool)
                 if (isinstance(tool_result, str) and ("malicious" in tool_result.lower() or "💀" in tool_result)) or (isinstance(tool_result, dict) and tool_result.get('malicious', 0) > 0):
@@ -198,7 +213,7 @@ class VirusTotalOllamaAgent:
                         logger.info(f"No malware family extracted for hash {h}; skipping Malpedia lookup.")
             tool_results_str = "\n".join(tool_results)
             prompt_with_context = (
-                f"The user provided these hashes: {', '.join(hashes)}. "
+                f"You are a malware analysis assistant. The user provided these hashes: {', '.join(hashes)}.\n"
                 f"You checked them using a tool, and the results were:\n{tool_results_str}\n"
                 f"Please summarize or inform the user based on these results."
             )
