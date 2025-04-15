@@ -7,6 +7,7 @@ langchain-community
 langchain-ollama
 langchain-text-splitters
 chromadb
+langchain-chroma
 markitdown[all]
 PyPDF2
 python-docx
