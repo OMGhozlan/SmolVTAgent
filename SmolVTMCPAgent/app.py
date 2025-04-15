@@ -185,7 +185,19 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
                     logger.info("Calling agent.run()...")
                     agent_response_text = agent_instance.run(prompt)
                     logger.info(f"Agent response received.")
-                    message_placeholder.markdown(agent_response_text)
+
+                    # Show <think>...</think> as a collapsible section if present
+                    import re
+                    think_match = re.search(r'<think>(.*?)</think>', agent_response_text, re.DOTALL)
+                    if think_match:
+                        main_response = re.sub(r'<think>.*?</think>', '', agent_response_text, flags=re.DOTALL).strip()
+                        thoughts = think_match.group(1).strip()
+                        if main_response:
+                            message_placeholder.markdown(main_response)
+                        with st.expander("Thoughts"):
+                            st.markdown(thoughts)
+                    else:
+                        message_placeholder.markdown(agent_response_text)
                     st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
                 except Exception as e:
                     logger.error(f"Error during agent execution: {e}", exc_info=True)
