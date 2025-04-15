@@ -115,6 +115,14 @@ if persist_chroma and os.path.exists(persist_dir):
         st.session_state.rag_emb_model = emb_model_choice
         rag_status_placeholder.success(f"Loaded persistent RAG vector store from '{persist_dir}'.")
         st.sidebar.markdown(f"**RAG loaded (persistent):** from '{persist_dir}'")
+        # Show files in vectorstore
+        from rag_utils import list_vectorstore_files
+        vs_files = list_vectorstore_files(st.session_state.rag_vectorstore)
+        if vs_files:
+            st.sidebar.markdown("**Files in Chroma DB:**\n" + "\n".join(f"- {f}" for f in vs_files))
+            logger.info(f"Files in Chroma DB: {vs_files}")
+        else:
+            st.sidebar.markdown("**Files in Chroma DB:** None found.")
         rag_progress_bar.progress(1.0)
         loaded_from_persist = True
     except Exception as e:
