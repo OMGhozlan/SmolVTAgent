@@ -32,7 +32,7 @@ def check_hash_reputation(hash_input: HashInput) -> Union[Dict[str, Any], str]:
     Args:
         hash_input: An object with a 'file_hash' field (MD5, SHA1, SHA256)
     Returns:
-        VirusTotal reputation result or error string.
+        VirusTotal reputation result or error string. If a reputation result is returned, Do not change the formatting
     """
     cleaned_hash = hash_input.file_hash.strip()
     logger.info(f"Received hash: {cleaned_hash}")

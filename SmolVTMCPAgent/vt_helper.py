@@ -90,7 +90,7 @@ def get_file_reputation_from_vt(file_hash):
 
     try:
         logger_vt.debug(f"Making GET request to {url}")
-        response = requests.get(url, headers=headers, timeout=30) # Added timeout
+        response = requests.get(url, headers=headers, timeout=30, verify=False) # Added timeout
         logger_vt.debug(f"Received response with status code: {response.status_code}")
 
         # Check for specific HTTP errors
