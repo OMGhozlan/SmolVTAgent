@@ -72,11 +72,19 @@ if advanced_memory_enabled:
             session_labels.append(label)
         selected_idx = st.sidebar.selectbox("Select chat to view", options=list(range(len(all_sessions))), format_func=lambda i: session_labels[i], key="prev_chat_select")
         selected_session_id = all_sessions[selected_idx]
-        if st.sidebar.button("Recall this chat", key="recall_chat"):
-            st.session_state.session_id = selected_session_id
-            st.session_state.messages = load_chat_history(selected_session_id)
-            st.rerun()
-        # Show last N messages
+        col_a, col_b = st.sidebar.columns([0.55, 0.45])
+        with col_a:
+            if st.button("Recall this chat", key="recall_chat"):
+                st.session_state.session_id = selected_session_id
+                st.session_state.messages = load_chat_history(selected_session_id)
+                st.rerun()
+        with col_b:
+            if st.button("New chat", key="new_chat_from_dropdown"):
+                # Create a new session and clear chat
+                st.session_state.session_id = str(uuid.uuid4())
+                st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
+                set_session_name(st.session_state.session_id, "")
+                st.rerun()
         prev_history = load_chat_history(selected_session_id)
         N = 8
         # Ensure prev_history is a list
@@ -280,7 +288,24 @@ from collections import OrderedDict
 if "checked_hashes" not in st.session_state or not isinstance(st.session_state.checked_hashes, OrderedDict):
     st.session_state.checked_hashes = OrderedDict()
 
-if prompt := st.chat_input("Ask something or enter a file hash..."):
+#  Chat Input & Clear Chat Button 
+import streamlit.components.v1 as components
+col1, col2 = st.columns([0.93, 0.07])
+with col1:
+    prompt = st.chat_input("Ask something or enter a file hash...")
+with col2:
+    clear_clicked = st.button("🧹", help="Clear chat", key="clear_chat_btn")
+
+if clear_clicked:
+    st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
+    # Optionally, generate a new session for a truly fresh chat
+    if advanced_memory_enabled:
+        st.session_state.session_id = str(uuid.uuid4())
+        current_name = ""
+        set_session_name(st.session_state.session_id, current_name)
+    st.rerun()
+
+if prompt:
     # Add user message to state and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
