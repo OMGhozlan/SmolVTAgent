@@ -99,19 +99,103 @@ class VirusTotalOllamaAgent:
             logger.exception(f"Unexpected error calling FastMCP tool: {e}")
             return f"Error: An unexpected error occurred while calling the VirusTotal tool."
 
+    def _extract_family_names(self, vt_result):
+        """
+        Try to extract malware family names from VT result (string or dict).
+        Returns a list of family names (may be empty).
+        """
+        import re
+        import json
+        family_names = set()
+        # Try to parse JSON if string
+        if isinstance(vt_result, str):
+            try:
+                vt_data = json.loads(vt_result)
+            except Exception:
+                vt_data = None
+        else:
+            vt_data = vt_result
+        # Try to extract from known keys
+        if vt_data and isinstance(vt_data, dict):
+            # Look for 'names', 'malware_family', 'family', etc.
+            candidates = []
+            if 'attributes' in vt_data:
+                attrs = vt_data['attributes']
+                # VT format: detected by engines
+                if 'popular_threat_classification' in attrs:
+                    fams = attrs['popular_threat_classification'].get('suggested_threat_label', None)
+                    if fams:
+                        if isinstance(fams, str):
+                            family_names.add(fams)
+                        elif isinstance(fams, list):
+                            family_names.update(fams)
+                # Some engines may list names
+                if 'popular_threat_names' in attrs:
+                    fams = attrs['popular_threat_names']
+                    if isinstance(fams, list):
+                        family_names.update(fams)
+            # Fallback: regex for known malware family patterns
+            if not family_names and vt_result:
+                fam_match = re.findall(r"family: ([A-Za-z0-9_\-.]+)", str(vt_result))
+                family_names.update(fam_match)
+        # If still empty, try regex on the whole string
+        if not family_names and vt_result:
+            fam_match = re.findall(r"family: ([A-Za-z0-9_\-.]+)", str(vt_result))
+            family_names.update(fam_match)
+        return list(family_names)
+
+    async def _call_malpedia_tool(self, family_name: str) -> dict:
+        """
+        Call the FastMCP malpedia_family_writeup tool for a given family name.
+        Returns a dict with 'summary' and 'url'.
+        """
+        from fastmcp import Client
+        from fastmcp.client.transports import SSETransport
+        import asyncio
+        tool_input = {"family_name": family_name}
+        try:
+            async with Client(SSETransport("http://localhost:8000/sse")) as client:
+                if not client.is_connected():
+                    logger.warning("Could not connect to FastMCP server for Malpedia tool.")
+                    return {"summary": None, "url": None, "error": "MCP not connected"}
+                result = await client.call_tool("malpedia_family_writeup", tool_input)
+                return result
+        except Exception as e:
+            logger.warning(f"Failed to call Malpedia tool for {family_name}: {e}")
+            return {"summary": None, "url": None, "error": str(e)}
+
     def run(self, user_input: str) -> str:
-        """Process user input, checking for any hashes and summarizing results if found."""
+        """Process user input, checking for any hashes and summarizing results if found. If malicious, search Malpedia for family writeups."""
         if not self.chain:
             return "Error: LLM is not initialized. Cannot process request."
 
         cleaned_input = user_input.strip()
         hashes = extract_hashes(cleaned_input)
 
+        malpedia_extras = []
+
         if hashes:
             tool_results = []
             for h in hashes:
                 tool_result = self._call_fastmcp_tool(h)
                 tool_results.append(f"Hash `{h}`: {tool_result}")
+                # If malicious, try to extract family and search Malpedia (via MCP tool)
+                if (isinstance(tool_result, str) and ("malicious" in tool_result.lower() or "💀" in tool_result)) or (isinstance(tool_result, dict) and tool_result.get('malicious', 0) > 0):
+                    families = self._extract_family_names(tool_result)
+                    logger.debug(f"Extracted families for hash {h}: {families}")
+                    if families:
+                        for fam in families:
+                            logger.info(f"Calling Malpedia tool for family: {fam}")
+                            import asyncio
+                            malpedia_result = asyncio.run(self._call_malpedia_tool(fam))
+                            summary = malpedia_result.get("summary")
+                            url = malpedia_result.get("url")
+                            if summary:
+                                malpedia_extras.append(f"**Malpedia Writeup for {fam}:** {summary}\n[Read more on Malpedia]({url})")
+                            elif url:
+                                malpedia_extras.append(f"[Malpedia page for {fam}]({url}) (no summary found)")
+                    else:
+                        logger.info(f"No malware family extracted for hash {h}; skipping Malpedia lookup.")
             tool_results_str = "\n".join(tool_results)
             prompt_with_context = (
                 f"The user provided these hashes: {', '.join(hashes)}. "
@@ -119,7 +203,11 @@ class VirusTotalOllamaAgent:
                 f"Please summarize or inform the user based on these results."
             )
             logger.info("Invoking LLM with hash check context for multiple hashes.")
-            return self.chain.invoke({"input": prompt_with_context})
+            llm_response = self.chain.invoke({"input": prompt_with_context})
+            # Append Malpedia info if found
+            if malpedia_extras:
+                llm_response += "\n\n" + "\n\n".join(malpedia_extras)
+            return llm_response
         else:
             logger.info("No hashes detected. Invoking LLM directly.")
             return self.chain.invoke({"input": user_input})

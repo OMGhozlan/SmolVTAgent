@@ -1,9 +1,15 @@
+import signal
+import sys
+
 import logging
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from typing import Dict, Any, Union
+
+import requests
+import re
 
 # Load environment variables from .env file BEFORE importing vt_helper
 load_dotenv()
@@ -47,5 +53,45 @@ def check_hash_reputation(hash_input: HashInput) -> Union[Dict[str, Any], str]:
         logger.exception(f"Error while checking hash reputation: {e}")
         return f"Error: {e}"
 
+class MalpediaInput(BaseModel):
+    family_name: str = Field(..., description="The malware family name to search on Malpedia.")
+
+@mcp.tool()
+def malpedia_family_writeup(input: MalpediaInput) -> Dict[str, str]:
+    """
+    Search Malpedia for a given malware family and return a summary and link if found.
+    Args:
+        input: An object with a 'family_name' field (malware family name, e.g., win.redline_stealer)
+    Returns:
+        Dict with 'summary' and 'url'. If not found, summary may be None.
+    """
+    base_url = "https://malpedia.caad.fkie.fraunhofer.de/details/"
+    fam_url_name = input.family_name.lower().replace(' ', '_').replace('-', '_')
+    url = base_url + fam_url_name
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            summary_match = re.search(r'<div class="card-body">\s*<p>(.*?)</p>', resp.text, re.DOTALL)
+            if summary_match:
+                summary = summary_match.group(1).strip()
+            else:
+                summary = None
+            return {"summary": summary, "url": url}
+        else:
+            return {"summary": None, "url": url}
+    except Exception as e:
+        logger.warning(f"Malpedia search failed for {input.family_name}: {e}")
+        return {"summary": None, "url": url, "error": str(e)}
+
+def shutdown_handler(signum, frame):
+    logger.info("Received termination signal. Shutting down FastMCP server gracefully...")
+    sys.exit(0)
+
 if __name__ == "__main__":
-    mcp.run(transport="sse") # , host="127.0.0.1", port=9000)
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    try:
+        mcp.run(transport="sse") # , host="127.0.0.1", port=9000)
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received. Shutting down FastMCP server gracefully...")
+        sys.exit(0)
