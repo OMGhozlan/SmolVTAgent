@@ -11,6 +11,21 @@ from langchain_core.output_parsers import StrOutputParser
 from config import OLLAMA_MODEL_ID, OLLAMA_API_BASE # Assuming these are still in config.py
 from vt_helper import is_valid_hash, format_vt_result # Keep format_vt_result here for now
 
+import re
+
+def extract_hashes(text):
+    """Extract all valid MD5, SHA1, or SHA256 hashes from the input text."""
+    patterns = [
+        r'\b[a-fA-F0-9]{32}\b',  # MD5
+        r'\b[a-fA-F0-9]{40}\b',  # SHA1
+        r'\b[a-fA-F0-9]{64}\b',  # SHA256
+    ]
+    matches = []
+    for pat in patterns:
+        matches.extend(re.findall(pat, text))
+    return list(set(matches))
+
+
 # Constants 
 # Deprecated, now using FastMCP Client
 FASTMCP_TOOL_ENDPOINT = "http://localhost:8000/tools/check_hash_reputation/call"
@@ -85,24 +100,30 @@ class VirusTotalOllamaAgent:
             return f"Error: An unexpected error occurred while calling the VirusTotal tool."
 
     def run(self, user_input: str) -> str:
-        """Process user input, potentially checking hash via FastMCP tool."""
+        """Process user input, checking for any hashes and summarizing results if found."""
         if not self.chain:
             return "Error: LLM is not initialized. Cannot process request."
 
         cleaned_input = user_input.strip()
-        
-        # Check if input is a hash BEFORE calling the LLM
-        if is_valid_hash(cleaned_input):
-            logger.info(f"Input '{cleaned_input}' detected as a valid hash. Calling tool first.")
-            tool_result = self._call_fastmcp_tool(cleaned_input)
-            # Construct a prompt including the tool result for the LLM
-            prompt_with_context = f"The user provided this hash: {cleaned_input}. You checked it using a tool, and the result was: '{tool_result}'. Please summarize this result or inform the user based on it."
-            logger.info("Invoking LLM with hash check context.")
-            return self.chain.invoke({"input": prompt_with_context}) 
+        hashes = extract_hashes(cleaned_input)
+
+        if hashes:
+            tool_results = []
+            for h in hashes:
+                tool_result = self._call_fastmcp_tool(h)
+                tool_results.append(f"Hash `{h}`: {tool_result}")
+            tool_results_str = "\n".join(tool_results)
+            prompt_with_context = (
+                f"The user provided these hashes: {', '.join(hashes)}. "
+                f"You checked them using a tool, and the results were:\n{tool_results_str}\n"
+                f"Please summarize or inform the user based on these results."
+            )
+            logger.info("Invoking LLM with hash check context for multiple hashes.")
+            return self.chain.invoke({"input": prompt_with_context})
         else:
-            # If not a hash, just pass input to the LLM directly
-            logger.info("Input is not a hash. Invoking LLM directly.")
+            logger.info("No hashes detected. Invoking LLM directly.")
             return self.chain.invoke({"input": user_input})
+
 
 # Helper function to get agent instance (similar to original setup) 
 _agent_instance = None
