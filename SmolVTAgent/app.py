@@ -97,7 +97,7 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
             # Add assistant text response to state
             st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
 
-            # --- Add logic to display formatted VT report if input was a hash ---
+            #  Add logic to display formatted VT report if input was a hash 
             cleaned_prompt = prompt.strip()
             if is_valid_hash(cleaned_prompt):
                 logger.info(f"Input '{cleaned_prompt}' is a valid hash. Attempting to fetch and format VT report directly.")

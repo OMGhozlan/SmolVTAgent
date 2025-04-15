@@ -58,17 +58,17 @@ if "ollama_models" not in st.session_state:
 if "selected_model" not in st.session_state:
     st.session_state.selected_model = OLLAMA_MODEL_ID
 
-# --- RAG: Document Upload and Embedding Model Selection ---
+#  RAG: Document Upload and Embedding Model Selection 
 from rag_utils import create_vectorstore
 
 # Document processing utilities are now in doc_processing.py
 from doc_processing import extract_text_from_file, chunk_markdown
 
-# --- RAG Persistence Option ---
+#  RAG Persistence Option 
 persist_chroma = st.sidebar.checkbox("Enable persistent RAG vector store (Chroma)", value=True)
 persist_dir = "chroma_db"
 
-# --- RAG Progress UI ---
+#  RAG Progress UI 
 rag_status_placeholder = st.sidebar.empty()
 rag_progress_bar = st.sidebar.progress(0)
 
@@ -79,7 +79,7 @@ def get_ollama_embedding_models(base_url):
         resp.raise_for_status()
         data = resp.json()
         # Filter for models with 'embedding' in the name
-        return [m["name"] for m in data.get("models", []) if "embedding" in m["name"]]
+        return [m["name"] for m in data.get("models", []) if "embed" in m["name"]]
     except Exception as e:
         logging.warning(f"Could not fetch Ollama embedding models: {e}")
         return []
@@ -91,7 +91,7 @@ with st.sidebar:
         st.session_state.selected_model = model_choice
         st.session_state.agent_instance = VirusTotalOllamaAgent(model_choice)
         st.rerun()
-    st.markdown("---")
+    st.markdown("")
     st.markdown("**RAG: Document Retrieval**")
     uploaded_files = st.file_uploader("Attach documents for RAG", type=["pdf", "txt", "docx"], accept_multiple_files=True)
     # List available embedding models
@@ -102,7 +102,7 @@ with st.sidebar:
 
 import os
 
-# --- RAG: Load persistent Chroma if enabled and available ---
+#  RAG: Load persistent Chroma if enabled and available 
 rag_chunks = []
 rag_documents = []
 rag_chunk_sources = []  # Track source filenames for each chunk

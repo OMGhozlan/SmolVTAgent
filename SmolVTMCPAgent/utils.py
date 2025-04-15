@@ -21,7 +21,7 @@ def get_ollama_models(base_url):
         resp = requests.get(f"{base_url}/api/tags", timeout=5)
         resp.raise_for_status()
         data = resp.json()
-        return [m["name"] for m in data.get("models", [])]
+        return [m["name"] for m in data.get("models", []) if "embed" not in m["name"]]
     except Exception as e:
         logging.warning(f"Could not fetch Ollama models: {e}")
         return [OLLAMA_MODEL_ID]
