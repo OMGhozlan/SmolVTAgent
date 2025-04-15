@@ -2,4 +2,11 @@ streamlit
 requests
 python-dotenv
 fastmcp
+langchain
+langchain-community
 langchain-ollama
+langchain-text-splitters
+chromadb
+markitdown[all]
+PyPDF2
+python-docx

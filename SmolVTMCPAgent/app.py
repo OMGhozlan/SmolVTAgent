@@ -12,16 +12,9 @@ from ollama_agent import get_agent, VirusTotalOllamaAgent
 # Helper to get available Ollama models
 import json
 
-def get_ollama_models(base_url):
-    try:
-        resp = requests.get(f"{base_url}/api/tags", timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        # Ollama returns {"models": [{"name": ...}, ...]}
-        return [m["name"] for m in data.get("models", [])]
-    except Exception as e:
-        logging.warning(f"Could not fetch Ollama models: {e}")
-        return [OLLAMA_MODEL_ID]
+# Utility functions are now in utils.py
+from utils import get_ollama_models, check_server_status
+
 
 
 # Logging Configuration
@@ -41,35 +34,7 @@ logger.info("Streamlit Application starting...")
 FASTMCP_SERVER_BASE_URL = "http://localhost:8000/sse"
 HEALTH_CHECK_ENDPOINT = f"{FASTMCP_SERVER_BASE_URL}"
 
-def check_server_status(url=HEALTH_CHECK_ENDPOINT, timeout=2):
-    """Checks if the FastMCP server SSE endpoint is reachable by searching for 'event: endpoint' in the response stream."""
-    try:
-        with requests.get(url, timeout=timeout, stream=True) as response:
-            if response.status_code >= 400:
-                logger.warning(f"Server status check failed for {url} (Status: {response.status_code})")
-                return False
-            # Read a small chunk of the stream for 'event: endpoint'
-            try:
-                for chunk in response.iter_lines(decode_unicode=True):
-                    if chunk and 'event: endpoint' in chunk:
-                        logger.info(f"Server status check successful for {url} (found 'event: endpoint')")
-                        return True
-                    # Only scan the first few lines to avoid hanging
-                    # (SSE will keep streaming pings forever)
-                logger.warning(f"Server status check failed: 'event: endpoint' not found in initial SSE stream from {url}")
-                return False
-            except Exception as e:
-                logger.error(f"Error reading SSE stream for server status check: {e}", exc_info=True)
-                return False
-    except requests.exceptions.ConnectionError:
-        logger.warning(f"Server status check failed: Connection error for {url}")
-        return False
-    except requests.exceptions.Timeout:
-        logger.warning(f"Server status check failed: Timeout for {url}")
-        return False
-    except Exception as e:
-        logger.error(f"Server status check failed: Unexpected error for {url}: {e}", exc_info=True)
-        return False
+
 
 # Page Configuration 
 st.set_page_config(page_title="Chat & File Reputation", layout="wide")
@@ -93,6 +58,32 @@ if "ollama_models" not in st.session_state:
 if "selected_model" not in st.session_state:
     st.session_state.selected_model = OLLAMA_MODEL_ID
 
+# --- RAG: Document Upload and Embedding Model Selection ---
+from rag_utils import create_vectorstore
+
+# Document processing utilities are now in doc_processing.py
+from doc_processing import extract_text_from_file, chunk_markdown
+
+# --- RAG Persistence Option ---
+persist_chroma = st.sidebar.checkbox("Enable persistent RAG vector store (Chroma)", value=True)
+persist_dir = "chroma_db"
+
+# --- RAG Progress UI ---
+rag_status_placeholder = st.sidebar.empty()
+rag_progress_bar = st.sidebar.progress(0)
+
+
+def get_ollama_embedding_models(base_url):
+    try:
+        resp = requests.get(f"{base_url}/api/tags", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        # Filter for models with 'embedding' in the name
+        return [m["name"] for m in data.get("models", []) if "embedding" in m["name"]]
+    except Exception as e:
+        logging.warning(f"Could not fetch Ollama embedding models: {e}")
+        return []
+
 with st.sidebar:
     st.markdown("**Ollama Model Selection:**")
     model_choice = st.selectbox("Choose Ollama model", st.session_state.ollama_models, index=st.session_state.ollama_models.index(st.session_state.selected_model) if st.session_state.selected_model in st.session_state.ollama_models else 0)
@@ -100,6 +91,76 @@ with st.sidebar:
         st.session_state.selected_model = model_choice
         st.session_state.agent_instance = VirusTotalOllamaAgent(model_choice)
         st.rerun()
+    st.markdown("---")
+    st.markdown("**RAG: Document Retrieval**")
+    uploaded_files = st.file_uploader("Attach documents for RAG", type=["pdf", "txt", "docx"], accept_multiple_files=True)
+    # List available embedding models
+    if "ollama_embedding_models" not in st.session_state:
+        st.session_state.ollama_embedding_models = get_ollama_embedding_models(OLLAMA_API_BASE)
+    emb_models = st.session_state.ollama_embedding_models
+    emb_model_choice = st.selectbox("Choose Ollama embedding model", emb_models if emb_models else ["nomic-embed-text"], index=0)
+
+import os
+
+# --- RAG: Load persistent Chroma if enabled and available ---
+rag_chunks = []
+rag_documents = []
+rag_chunk_sources = []  # Track source filenames for each chunk
+loaded_from_persist = False
+if persist_chroma and os.path.exists(persist_dir):
+    try:
+        from rag_utils import load_vectorstore
+        st.session_state.rag_vectorstore = load_vectorstore(emb_model_choice, persist_dir)
+        st.session_state.rag_documents = []  # Optionally, load docs metadata if you persist it
+        st.session_state.rag_emb_model = emb_model_choice
+        rag_status_placeholder.success(f"Loaded persistent RAG vector store from '{persist_dir}'.")
+        st.sidebar.markdown(f"**RAG loaded (persistent):** from '{persist_dir}'")
+        rag_progress_bar.progress(1.0)
+        loaded_from_persist = True
+    except Exception as e:
+        rag_status_placeholder.error(f"Failed to load persistent vector store: {e}")
+        logger.error(f"Failed to load persistent vector store: {e}", exc_info=True)
+
+if not loaded_from_persist:
+    # Extract and embed docs if uploaded
+    if uploaded_files:
+        total_files = len(uploaded_files)
+        for idx, f in enumerate(uploaded_files):
+            logger.info(f"[RAG] Processing file {idx+1}/{total_files}: {f.name}")
+            rag_status_placeholder.info(f"Processing document {idx+1}/{total_files}: {f.name}")
+            try:
+                with st.spinner(f"Extracting and chunking {f.name}..."):
+                    logger.info(f"[RAG] Extracting text from {f.name}")
+                    md_text = extract_text_from_file(f)
+                    rag_documents.append(md_text)
+                    logger.info(f"[RAG] Chunking {f.name}")
+                    chunks = chunk_markdown(md_text)
+                    rag_chunks.extend(chunks)
+                    rag_chunk_sources.extend([f.name] * len(chunks))
+                    logger.info(f"[RAG] {f.name}: {len(chunks)} chunks")
+                rag_progress_bar.progress((idx+1)/total_files)
+            except Exception as e:
+                logger.error(f"Failed to extract {f.name}: {e}", exc_info=True)
+                st.warning(f"Failed to extract {f.name}: {e}")
+        rag_status_placeholder.success(f"Document processing complete: {len(rag_chunks)} chunks from {len(rag_documents)} docs.")
+        rag_progress_bar.progress(1.0)
+    else:
+        rag_progress_bar.progress(0)
+        rag_status_placeholder.info("No documents uploaded for RAG.")
+
+if rag_chunks:
+    rag_status_placeholder.info("Embedding and indexing chunks...")
+    logger.info(f"[RAG] Embedding {len(rag_chunks)} chunks with model {emb_model_choice}")
+    if persist_chroma:
+        st.session_state.rag_vectorstore = create_vectorstore(rag_chunks, emb_model_choice, persist_directory=persist_dir)
+    else:
+        st.session_state.rag_vectorstore = create_vectorstore(rag_chunks, emb_model_choice)
+    st.session_state.rag_documents = rag_documents
+    st.session_state.rag_emb_model = emb_model_choice
+    rag_status_placeholder.success(f"RAG loaded: {len(rag_chunks)} chunks from {len(rag_documents)} docs.")
+    st.sidebar.markdown(f"**RAG loaded:** {len(rag_chunks)} chunks from {len(rag_documents)} docs")
+    rag_progress_bar.progress(1.0)
+
 
 # Get Agent Instance
 logger.info("Initializing Ollama agent...")
@@ -183,6 +244,27 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
                 message_placeholder.markdown("Thinking...")
                 try:
                     logger.info("Calling agent.run()...")
+                    # RAG: Retrieve context from docs if available
+                    rag_context = ""
+                    rag_references = None
+                    rag_reference_sources = None
+                    if "rag_vectorstore" in st.session_state and st.session_state.rag_vectorstore and prompt:
+                        docs = st.session_state.rag_vectorstore.similarity_search(prompt, k=3)
+                        rag_context = "\n\n".join([doc.page_content for doc in docs])
+                        if rag_context:
+                            prompt = f"Context:\n{rag_context}\n\nUser: {prompt}"
+                            # Prepare references for UI
+                            rag_references = docs
+                            # Try to find the source file for each doc chunk by matching content
+                            rag_reference_sources = []
+                            for d in docs:
+                                try:
+                                    idx = rag_chunks.index(d.page_content)
+                                    source = rag_chunk_sources[idx] if idx < len(rag_chunk_sources) else "[Unknown]"
+                                except Exception:
+                                    source = "[Unknown]"
+                                rag_reference_sources.append(source)
+
                     agent_response_text = agent_instance.run(prompt)
                     logger.info(f"Agent response received.")
 
@@ -198,6 +280,15 @@ if prompt := st.chat_input("Ask something or enter a file hash..."):
                             st.markdown(thoughts)
                     else:
                         message_placeholder.markdown(agent_response_text)
+
+                    # Show RAG references if used
+                    if rag_references:
+                        refs_md = "\n".join([
+                            f"**[{i+1}]** ({rag_reference_sources[i]}) {doc.page_content[:120].replace(chr(10), ' ')}..." for i, doc in enumerate(rag_references)
+                        ])
+                        with st.expander("References", expanded=True):
+                            st.markdown(refs_md)
+
                     st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
                 except Exception as e:
                     logger.error(f"Error during agent execution: {e}", exc_info=True)
