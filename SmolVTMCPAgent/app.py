@@ -7,7 +7,22 @@ from ollama_agent import check_hash_sync
 
 # Import setup functions from other modules
 from config import VT_API_KEY, OLLAMA_MODEL_ID, OLLAMA_API_BASE # Need Ollama config again
-from ollama_agent import get_agent # Import the new agent factory
+from ollama_agent import get_agent, VirusTotalOllamaAgent
+
+# Helper to get available Ollama models
+import json
+
+def get_ollama_models(base_url):
+    try:
+        resp = requests.get(f"{base_url}/api/tags", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        # Ollama returns {"models": [{"name": ...}, ...]}
+        return [m["name"] for m in data.get("models", [])]
+    except Exception as e:
+        logging.warning(f"Could not fetch Ollama models: {e}")
+        return [OLLAMA_MODEL_ID]
+
 
 # Logging Configuration
 log_file = 'app.log'
@@ -71,9 +86,26 @@ if "messages" not in st.session_state:
 if 'server_status' not in st.session_state:
     st.session_state.server_status = check_server_status()
 
+# Sidebar: Ollama model selection
+if "ollama_models" not in st.session_state:
+    st.session_state.ollama_models = get_ollama_models(OLLAMA_API_BASE)
+
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = OLLAMA_MODEL_ID
+
+with st.sidebar:
+    st.markdown("**Ollama Model Selection:**")
+    model_choice = st.selectbox("Choose Ollama model", st.session_state.ollama_models, index=st.session_state.ollama_models.index(st.session_state.selected_model) if st.session_state.selected_model in st.session_state.ollama_models else 0)
+    if model_choice != st.session_state.selected_model:
+        st.session_state.selected_model = model_choice
+        st.session_state.agent_instance = VirusTotalOllamaAgent(model_choice)
+        st.experimental_rerun()
+
 # Get Agent Instance
 logger.info("Initializing Ollama agent...")
-agent_instance = get_agent()
+if "agent_instance" not in st.session_state:
+    st.session_state.agent_instance = VirusTotalOllamaAgent(st.session_state.selected_model)
+agent_instance = st.session_state.agent_instance
 
 # Sidebar Info 
 st.sidebar.header("Configuration Status")
@@ -104,10 +136,9 @@ else:
     logger.error("VirusTotal API Key is missing.")
 
 if agent_instance and agent_instance.llm:
-     st.sidebar.success(f"Ollama Agent ({OLLAMA_MODEL_ID}): Initialized.", icon="🤖")
-     # logger.info(f"Ollama Agent Initialized successfully with model: {OLLAMA_MODEL_ID}") # Less verbose
+     st.sidebar.success(f"Ollama Agent ({st.session_state.selected_model}): Initialized.", icon="🤖")
 else:
-     st.sidebar.error(f"Ollama Agent ({OLLAMA_MODEL_ID}): Failed.", icon="🔥")
+     st.sidebar.error(f"Ollama Agent ({st.session_state.selected_model}): Failed.", icon="🔥")
      st.sidebar.markdown(f"Check Ollama server at `{OLLAMA_API_BASE}`.")
      logger.error(f"Ollama Agent Initialization failed. Check Ollama server at {OLLAMA_API_BASE}")
 

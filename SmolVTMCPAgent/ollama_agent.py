@@ -53,10 +53,12 @@ logger = logging.getLogger(__name__)
 
 # Agent Class 
 class VirusTotalOllamaAgent:
-    def __init__(self):
+    def __init__(self, model_name=None):
+        if model_name is None:
+            model_name = OLLAMA_MODEL_ID
         try:
-            self.llm = OllamaLLM(model=OLLAMA_MODEL_ID, base_url=OLLAMA_API_BASE)
-            logger.info(f"Ollama LLM initialized with model: {OLLAMA_MODEL_ID} at {OLLAMA_API_BASE}")
+            self.llm = OllamaLLM(model=model_name, base_url=OLLAMA_API_BASE)
+            logger.info(f"Ollama LLM initialized with model: {model_name} at {OLLAMA_API_BASE}")
         except Exception as e:
             logger.error(f"Failed to initialize Ollama LLM: {e}", exc_info=True)
             self.llm = None
@@ -105,9 +107,9 @@ class VirusTotalOllamaAgent:
 # Helper function to get agent instance (similar to original setup) 
 _agent_instance = None
 
-def get_agent() -> VirusTotalOllamaAgent:
+def get_agent(model_name=None) -> VirusTotalOllamaAgent:
     global _agent_instance
-    if _agent_instance is None:
-        logger.info("Creating new VirusTotalOllamaAgent instance.")
-        _agent_instance = VirusTotalOllamaAgent()
+    if _agent_instance is None or (model_name is not None and getattr(_agent_instance.llm, 'model', None) != model_name):
+        logger.info(f"Creating new VirusTotalOllamaAgent instance for model: {model_name}")
+        _agent_instance = VirusTotalOllamaAgent(model_name)
     return _agent_instance
