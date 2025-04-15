@@ -99,7 +99,7 @@ with st.sidebar:
     if model_choice != st.session_state.selected_model:
         st.session_state.selected_model = model_choice
         st.session_state.agent_instance = VirusTotalOllamaAgent(model_choice)
-        st.experimental_rerun()
+        st.rerun()
 
 # Get Agent Instance
 logger.info("Initializing Ollama agent...")
