@@ -1,11 +1,14 @@
 import logging
 import asyncio
+import re
+import json
+import time
 from fastmcp import Client
 from fastmcp.client.transports import SSETransport  # Use SSETransport for HTTP/SSE communication
-import json
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from datetime import datetime, timezone
 
 from config import OLLAMA_MODEL_ID, OLLAMA_API_BASE # Assuming these are still in config.py
 
@@ -197,9 +200,7 @@ class VirusTotalOllamaAgent:
                     # Build a cache entry that contains the raw VT response and summary fields
                     cache_entry = {
                         'raw': vt_result,
-                        'malicious': vt_result.get('malicious', None) if isinstance(vt_result, dict) else None,
-                        'threat_names': vt_result.get('threat_names', []) if isinstance(vt_result, dict) else [],
-                        'categories': vt_result.get('categories', []) if isinstance(vt_result, dict) else []
+                        'timestamp': datetime.now(timezone.utc).isoformat()
                     }
                     tool_results[h] = cache_entry
                     cache[h_key] = cache_entry

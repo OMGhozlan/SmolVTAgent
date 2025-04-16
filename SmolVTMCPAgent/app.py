@@ -10,6 +10,7 @@ from config import VT_API_KEY, OLLAMA_MODEL_ID, OLLAMA_API_BASE # Need Ollama co
 # Helper to get available Ollama models
 import os
 import time
+from datetime import datetime, timezone
 import re
 from utils import load_hash_cache, save_hash_cache, extract_hashes, extract_entities, get_ollama_models, check_server_status
 import uuid
@@ -319,7 +320,7 @@ if st.session_state.messages:
 if "checked_hashes" not in st.session_state or not isinstance(st.session_state.checked_hashes, dict):
     st.session_state.checked_hashes = load_hash_cache()
 
-# Render chat messages (always above input bar)
+# Render only the latest chat message (above input bar)
 if st.session_state.messages:
     message = st.session_state.messages[-1]
     with st.chat_message(message["role"]):
@@ -363,18 +364,15 @@ if prompt:
                         if hash_key not in st.session_state.checked_hashes:
                             logger.info(f"[VT CHECK] Invoking VT tool for hash: {hash_key}")
                             vt_response = check_hash_sync(hash_val)
-                            # Dummy parsing logic; replace with real parsing for your VT response
                             result_struct = {
-                                'result': vt_response,
-                                'timestamp': int(time.time()),
-                                'malicious': 'malicious' in str(vt_response).lower(),
-                                'threat_names': [],  # TODO: parse from vt_response
-                                'categories': [],    # TODO: parse from vt_response
-                                'raw': vt_response
+                                'raw': vt_response,
+                                'timestamp': datetime.now(timezone.utc).isoformat(),
+                                'malicious': vt_response.get('malicious', None) if isinstance(vt_response, dict) else ('malicious' in str(vt_response).lower()),
+                                'threat_names': vt_response.get('threat_names', []) if isinstance(vt_response, dict) else [],
+                                'categories': vt_response.get('categories', []) if isinstance(vt_response, dict) else []
                             }
                             st.session_state.checked_hashes[hash_key] = result_struct
                             save_hash_cache(st.session_state.checked_hashes)
-                            # Enclose hash in <checkedhash> tags in chat
                             tagged_result = re.sub(rf'{re.escape(hash_val)}', f'<checkedhash>{hash_val}</checkedhash>', str(vt_response))
                             message_placeholder.markdown(tagged_result)
                             st.session_state.messages.append({"role": "assistant", "content": tagged_result})
@@ -392,7 +390,7 @@ if prompt:
                             'user': prompt,
                             'assistant': tagged_result,
                             'entities': extract_entities(prompt, st.session_state.checked_hashes.get(hash_key)),
-                            'timestamp': int(time.time())
+                            'timestamp': datetime.now(timezone.utc).isoformat()
                         })
                         
                     except Exception as e:
@@ -414,12 +412,8 @@ if prompt:
                     logger.info(f"[TAGGED VT CHECK] Invoking VT tool for tagged hash: {hash_key}")
                     vt_response = check_hash_sync(hash_val)
                     result_struct = {
-                        'result': vt_response,
-                        'timestamp': int(time.time()),
-                        'malicious': 'malicious' in str(vt_response).lower(),
-                        'threat_names': [],
-                        'categories': [],
-                        'raw': vt_response
+                        'raw': vt_response,
+                        'timestamp': datetime.now(timezone.utc).isoformat()
                     }
                     st.session_state.checked_hashes[hash_key] = result_struct
                     save_hash_cache(st.session_state.checked_hashes)
@@ -434,7 +428,7 @@ if prompt:
                             'user': prompt,
                             'assistant': tagged_result,
                             'entities': extract_entities(prompt, result_struct),
-                            'timestamp': int(time.time())
+                            'timestamp': datetime.now(timezone.utc).isoformat()
                         })
                 else:
                     logger.info(f"[TAGGED VT CHECK] Tagged hash {hash_key} found in cache. Skipping VT tool.")
@@ -450,7 +444,7 @@ if prompt:
                             'user': prompt,
                             'assistant': tagged_result,
                             'entities': extract_entities(prompt, cached),
-                            'timestamp': int(time.time())
+                            'timestamp': datetime.now(timezone.utc).isoformat()
                         })
         else:
             # Get response from the agent as before
@@ -514,7 +508,7 @@ if prompt:
                         'user': prompt,
                         'assistant': agent_response_text,
                         'entities': extract_entities(prompt),
-                        'timestamp': int(time.time())
+                        'timestamp': datetime.now(timezone.utc).isoformat()
                     })
                     
                 except Exception as e:

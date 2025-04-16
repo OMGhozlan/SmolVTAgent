@@ -1,6 +1,7 @@
 import os
 import json
 from typing import List, Dict, Any
+from datetime import datetime, timezone
 
 MEMORY_DIR = "chat_memories"
 SESSION_NAMES_FILE = os.path.join(MEMORY_DIR, "session_names.json")
@@ -34,9 +35,30 @@ def get_memory_path(session_id: str) -> str:
 def save_chat_history(session_id: str, messages: List[Dict[str, Any]], hash_cache: dict = None):
     """Persist chat history and hash cache for a session as a JSON file with top-level keys."""
     path = get_memory_path(session_id)
+    # Ensure all timestamps are ISO strings for JSON serialization
+    serializable_messages = []
+    for message in messages:
+        msg = dict(message)
+        ts = msg.get("timestamp")
+        if isinstance(ts, (datetime,)):
+            msg["timestamp"] = ts.isoformat()
+        elif ts is None:
+            msg["timestamp"] = datetime.now(timezone.utc).isoformat()
+        serializable_messages.append(msg)
+    # Ensure all timestamps in hash_cache are also ISO strings
+    serializable_hash_cache = {}
+    if hash_cache:
+        for k, v in hash_cache.items():
+            entry = dict(v)
+            ts = entry.get("timestamp")
+            if isinstance(ts, (datetime,)):
+                entry["timestamp"] = ts.isoformat()
+            elif ts is None:
+                entry["timestamp"] = datetime.now(timezone.utc).isoformat()
+            serializable_hash_cache[k] = entry
     data = {
-        "messages": messages,
-        "hash_cache": hash_cache if hash_cache is not None else {}
+        "messages": serializable_messages,
+        "hash_cache": serializable_hash_cache
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -44,15 +66,17 @@ def save_chat_history(session_id: str, messages: List[Dict[str, Any]], hash_cach
 def load_chat_history(session_id: str):
     """Load chat history and hash cache for a session if it exists. Returns a dict with keys 'messages' and 'hash_cache'."""
     path = get_memory_path(session_id)
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # Backward compatibility: if it's a list, treat as messages only
-            if isinstance(data, list):
-                return {"messages": data, "hash_cache": {}}
-            return data
-    return {"messages": [], "hash_cache": {}}
-
+    if not os.path.exists(path):
+        return {"messages": [], "hash_cache": {}}
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    messages = data.get("messages", [])
+    # Ensure every message has a timestamp (for backward compatibility)
+    for msg in messages:
+        if "timestamp" not in msg:
+            msg["timestamp"] = datetime.now(timezone.utc).isoformat()
+    hash_cache = data.get("hash_cache", {})
+    return {"messages": messages, "hash_cache": hash_cache}
 
 def list_sessions() -> list:
     """List all session IDs with stored memory."""
