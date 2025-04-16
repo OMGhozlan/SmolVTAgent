@@ -1,5 +1,4 @@
 import streamlit as st
-import re
 
 def extract_text_from_file(file):
     """

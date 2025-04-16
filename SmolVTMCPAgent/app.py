@@ -1,84 +1,24 @@
 import streamlit as st
 import logging
 import requests # Need requests for the health check
-from ollama_agent import check_hash_sync
+from ollama_agent import check_hash_sync, VirusTotalOllamaAgent
 # from fastmcp.client.transports import SSETransport
-
 
 # Import setup functions from other modules
 from config import VT_API_KEY, OLLAMA_MODEL_ID, OLLAMA_API_BASE # Need Ollama config again
-from ollama_agent import get_agent, VirusTotalOllamaAgent
 
 # Helper to get available Ollama models
-import json
 import os
 import time
 import re
+from utils import load_hash_cache, save_hash_cache, extract_hashes, extract_entities, get_ollama_models, check_server_status
+import uuid
+from chat_memory import save_chat_history, load_chat_history, list_sessions, set_session_name, get_session_name
+from rag_utils import create_vectorstore, load_vectorstore, list_vectorstore_files
+from doc_processing import extract_text_from_file, chunk_markdown
 
 #  Hash cache disk utilities 
 HASH_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'hash_cache.json')
-def load_hash_cache():
-    try:
-        with open(HASH_CACHE_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_hash_cache(cache):
-    try:
-        with open(HASH_CACHE_PATH, 'w', encoding='utf-8') as f:
-            json.dump(cache, f)
-    except Exception as e:
-        logging.warning(f"Could not save hash cache: {e}")
-
-#  Chat context disk utilities (optional: currently session only) 
-CONTEXT_SIZE = 5  # Number of Q/A pairs to keep
-
-def extract_hashes(text):
-    return re.findall(r'\b[a-fA-F0-9]{32}\b|\b[a-fA-F0-9]{40}\b|\b[a-fA-F0-9]{64}\b', text or "")
-
-def extract_entities(text, vt_result=None):
-    # Extract hashes, verdict, threat names, categories from text and VT result
-    hashes = extract_hashes(text)
-    verdict = None
-    threat_names = []
-    categories = []
-    if vt_result and isinstance(vt_result, dict):
-        verdict = vt_result.get('malicious', None)
-        threat_names = vt_result.get('threat_names', [])
-        categories = vt_result.get('categories', [])
-    return {
-        'hashes': hashes,
-        'verdict': verdict,
-        'threat_names': threat_names,
-        'categories': categories
-    }
-
-def compress_context(context, max_pairs=CONTEXT_SIZE):
-    return [
-        {
-            'user': entry['user'],
-            'assistant': entry['assistant'],
-            'entities': entry['entities']
-        }
-        for entry in context[-max_pairs:]
-    ]
-
-def expand_followup_question(user_prompt, context):
-    # Replace 'the last hash' or similar with the last mentioned hash
-    last_hash = None
-    for entry in reversed(context):
-        if entry['entities'].get('hashes'):
-            last_hash = entry['entities']['hashes'][-1]
-            break
-    if last_hash and ("last hash" in user_prompt or "last one" in user_prompt):
-        return user_prompt.replace("last hash", last_hash).replace("last one", last_hash)
-    return user_prompt
-
-# Utility functions are now in utils.py
-from utils import get_ollama_models, check_server_status
-
-
 
 # Logging Configuration
 log_file = 'app.log'
@@ -98,15 +38,20 @@ FASTMCP_SERVER_BASE_URL = "http://localhost:8000/sse"
 HEALTH_CHECK_ENDPOINT = f"{FASTMCP_SERVER_BASE_URL}"
 
 
-
 # Page Configuration 
 st.set_page_config(page_title="Chat & File Reputation", layout="wide")
 st.title("💬 Chat & Check 🔬 (Ollama + FastMCP)")
 st.caption(f"Using {OLLAMA_MODEL_ID} via {OLLAMA_API_BASE}. Provide a file hash for VirusTotal check using the FastMCP tool server.")
 
+
 #  Advanced Persistent Memory Option 
-from chat_memory import save_chat_history, load_chat_history, list_sessions, set_session_name, get_session_name
-import uuid
+
+#  Double Initialization Guard 
+if "just_reset" in st.session_state and st.session_state.just_reset:
+    st.session_state.just_reset = False
+    skip_sidebar_actions = True
+else:
+    skip_sidebar_actions = False
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -137,23 +82,26 @@ if advanced_memory_enabled:
         selected_session_id = all_sessions[selected_idx]
         col_a, col_b, col_c = st.sidebar.columns([0.34, 0.33, 0.33])
         with col_a:
-            if st.button("🔄 Recall this chat", key="recall_chat"):
+            if st.button("🔄 Recall this chat", key="recall_chat") and not skip_sidebar_actions:
                 st.session_state.session_id = selected_session_id
                 st.session_state.messages = load_chat_history(selected_session_id)
+                st.session_state.just_reset = True
                 st.rerun()
         with col_b:
-            if st.button("🆕 New chat", key="new_chat_from_dropdown"):
+            if st.button("🆕 New chat", key="new_chat_from_dropdown") and not skip_sidebar_actions:
                 st.session_state.session_id = str(uuid.uuid4())
-                st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
+                st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server Kek."}]
                 set_session_name(st.session_state.session_id, "")
+                st.session_state.just_reset = True
                 st.rerun()
         with col_c:
-            if st.button("🧹 Clear chat", key="clear_chat_sidebar"):
+            if st.button("🧹 Clear chat", key="clear_chat_sidebar") and not skip_sidebar_actions:
                 st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
                 if advanced_memory_enabled:
                     st.session_state.session_id = str(uuid.uuid4())
                     current_name = ""
                     set_session_name(st.session_state.session_id, current_name)
+                st.session_state.just_reset = True
                 st.rerun()
         prev_history = load_chat_history(selected_session_id)
         N = 8
@@ -167,19 +115,34 @@ if advanced_memory_enabled:
     else:
         st.sidebar.caption("No previous chats found.")
 
-# Load chat history from disk if advanced memory is enabled
+# Robust Message Initialization
+# Always ensure messages is a list, load history only once per session, and set greeting if needed.
+if "history_loaded_for_session" not in st.session_state:
+    st.session_state.history_loaded_for_session = None
+
+# Ensure chat_context is initialized
+if "chat_context" not in st.session_state:
+    st.session_state.chat_context = []
+
+if "messages" not in st.session_state or not isinstance(st.session_state.messages, list):
+    st.session_state.messages = []
+
 if advanced_memory_enabled:
-    loaded_history = load_chat_history(st.session_state.session_id)
-    if loaded_history:
-        st.session_state.messages = loaded_history
-        logger.info(f"Loaded persistent chat history for session {st.session_state.session_id}")
-    elif "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
-        logger.info("Chat history initialized.")
-else:
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."}]
-        logger.info("Chat history initialized.")
+    if st.session_state.history_loaded_for_session != st.session_state.session_id:
+        loaded_history = load_chat_history(st.session_state.session_id)
+        if loaded_history and isinstance(loaded_history, list) and len(loaded_history) > 0:
+            st.session_state.messages = loaded_history
+            logger.info(f"Loaded persistent chat history for session {st.session_state.session_id}")
+        st.session_state.history_loaded_for_session = st.session_state.session_id
+
+if not st.session_state.messages:
+    st.session_state.messages = [{
+        "role": "assistant",
+        "content": "Hi! Ask me anything or provide a file hash (MD5, SHA1, SHA256) to check its VirusTotal reputation via the tool server."
+    }]
+    logger.info("Chat history initialized.")
+
+
 
 # Initialization 
 # Initialize chat history
@@ -195,10 +158,8 @@ if "selected_model" not in st.session_state:
     st.session_state.selected_model = OLLAMA_MODEL_ID
 
 #  RAG: Document Upload and Embedding Model Selection 
-from rag_utils import create_vectorstore
 
 # Document processing utilities are now in doc_processing.py
-from doc_processing import extract_text_from_file, chunk_markdown
 
 #  RAG Persistence Option 
 persist_chroma = st.sidebar.checkbox("Enable persistent RAG vector store (Chroma)", value=True)
@@ -349,43 +310,34 @@ else:
 
 # Chat UI 
 # Display chat messages from history
-for message in st.session_state.messages:
+if st.session_state.messages:
+    message = st.session_state.messages[-1]
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 # React to user input
-from collections import OrderedDict
 if "checked_hashes" not in st.session_state or not isinstance(st.session_state.checked_hashes, dict):
     st.session_state.checked_hashes = load_hash_cache()
 
-#  Maintain compressed chat context (session only for now) 
-if "chat_context" not in st.session_state:
-    st.session_state.chat_context = []
-#  Render chat messages (always above input bar) 
-for message in st.session_state.messages:
+# Render chat messages (always above input bar)
+if st.session_state.messages:
+    message = st.session_state.messages[-1]
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-#  Chat Input (always at the bottom) 
-prompt = st.chat_input("Ask something or enter a file hash...")
+# Chat Input (always at the bottom)
+prompt = st.chat_input("Ask something or enter a file hash...", key="chat_input")
 
-#  Only process user prompt below 
 if prompt:
-    #  Expand follow-up questions using chat context 
-    expanded_prompt = expand_followup_question(prompt, st.session_state.chat_context)
-
     # Add user message to state and display it
-    st.session_state.messages.append({"role": "user", "content": expanded_prompt})
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(expanded_prompt)
-    logger.info(f"User input received: {expanded_prompt}")
+        st.markdown(prompt)
+    logger.info(f"User input received: {prompt}")
 
     # Save chat history if advanced memory is enabled
     if advanced_memory_enabled:
         save_chat_history(st.session_state.session_id, st.session_state.messages)
-
-    #  Extract entities from user prompt 
-    user_entities = extract_entities(expanded_prompt)
 
     # Check if agent is available before proceeding
     if not agent_instance or not agent_instance.chain:
@@ -394,48 +346,112 @@ if prompt:
         # Don't st.stop() here, let the message be displayed
     else:
         # If the prompt is a hash, call FastMCP directly for reputation, but only once per unique hash
-        if hasattr(agent_instance, 'is_valid_hash') and agent_instance.is_valid_hash(expanded_prompt):
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                message_placeholder.markdown("Checking hash reputation via MCP...")
-                try:
-                    hash_key = expanded_prompt.strip().lower()
-                    if hash_key in st.session_state.checked_hashes:
-                        result_struct = st.session_state.checked_hashes[hash_key]
-                        logger.info(f"Reusing cached VT result for hash {hash_key}")
-                    else:
-                        vt_response = check_hash_sync(expanded_prompt)
-                        # Dummy parsing logic; replace with real parsing for your VT response
-                        result_struct = {
-                            'result': vt_response,
-                            'timestamp': int(time.time()),
-                            'malicious': 'malicious' in str(vt_response).lower(),
-                            'threat_names': [],  # TODO: parse from vt_response
-                            'categories': [],    # TODO: parse from vt_response
-                            'raw': vt_response
-                        }
-                        st.session_state.checked_hashes[hash_key] = result_struct
-                        save_hash_cache(st.session_state.checked_hashes)
-                    # Format and display result
-                    message_placeholder.markdown(result_struct['result'])
-                    st.session_state.messages.append({"role": "assistant", "content": result_struct['result']})
-                    if advanced_memory_enabled:
-                        save_chat_history(st.session_state.session_id, st.session_state.messages)
-                    #  Update chat context with this Q/A 
-                    st.session_state.chat_context.append({
-                        'user': expanded_prompt,
-                        'assistant': result_struct['result'],
-                        'entities': extract_entities(expanded_prompt, result_struct),
-                        'timestamp': int(time.time())
-                    })
-                    st.session_state.chat_context = compress_context(st.session_state.chat_context)
-                except Exception as e:
-                    logger.error(f"Error during MCP hash check: {e}", exc_info=True)
-                    error_message = f"Sorry, error checking hash reputation: {str(e)}"
-                    message_placeholder.error(error_message, icon="💥")
-                    st.session_state.messages.append({"role": "assistant", "content": error_message})
-                    if advanced_memory_enabled:
-                        save_chat_history(st.session_state.session_id, st.session_state.messages)
+        # Only process hashes NOT already enclosed in <checkedhash> tags
+        untagged_hashes = extract_hashes(prompt)
+        if (
+            hasattr(agent_instance, 'is_valid_hash')
+            and untagged_hashes
+            and prompt == prompt  # Only if this is a direct user prompt, not a sidebar/context rerun
+        ):
+            for hash_val in untagged_hashes:
+                with st.chat_message("assistant"):
+                    message_placeholder = st.empty()
+                    message_placeholder.markdown(f"Checking hash reputation for {hash_val} via MCP...")
+                    try:
+                        hash_key = hash_val.strip().lower()
+                        logger.info(f"[VT CHECK] hash_key: {hash_key}, cache keys: {list(st.session_state.checked_hashes.keys())}, prompt: {prompt}")
+                        if hash_key not in st.session_state.checked_hashes:
+                            logger.info(f"[VT CHECK] Invoking VT tool for hash: {hash_key}")
+                            vt_response = check_hash_sync(hash_val)
+                            # Dummy parsing logic; replace with real parsing for your VT response
+                            result_struct = {
+                                'result': vt_response,
+                                'timestamp': int(time.time()),
+                                'malicious': 'malicious' in str(vt_response).lower(),
+                                'threat_names': [],  # TODO: parse from vt_response
+                                'categories': [],    # TODO: parse from vt_response
+                                'raw': vt_response
+                            }
+                            st.session_state.checked_hashes[hash_key] = result_struct
+                            save_hash_cache(st.session_state.checked_hashes)
+                            # Enclose hash in <checkedhash> tags in chat
+                            tagged_result = re.sub(rf'{re.escape(hash_val)}', f'<checkedhash>{hash_val}</checkedhash>', str(vt_response))
+                            message_placeholder.markdown(tagged_result)
+                            st.session_state.messages.append({"role": "assistant", "content": tagged_result})
+                        else:
+                            logger.info(f"[VT CHECK] Hash {hash_key} found in cache. Skipping VT tool.")
+                            # Already cached, just return the cached result with <checkedhash> tags
+                            cached = st.session_state.checked_hashes[hash_key]
+                            tagged_result = re.sub(rf'{re.escape(hash_val)}', f'<checkedhash>{hash_val}</checkedhash>', str(cached['result']))
+                            message_placeholder.markdown(tagged_result)
+                            st.session_state.messages.append({"role": "assistant", "content": tagged_result})
+                        if advanced_memory_enabled:
+                            save_chat_history(st.session_state.session_id, st.session_state.messages)
+                        #  Update chat context with this Q/A 
+                        st.session_state.chat_context.append({
+                            'user': prompt,
+                            'assistant': tagged_result,
+                            'entities': extract_entities(prompt, st.session_state.checked_hashes.get(hash_key)),
+                            'timestamp': int(time.time())
+                        })
+                        
+                    except Exception as e:
+                        logger.error(f"Error during MCP hash check: {e}", exc_info=True)
+                        error_message = f"Sorry, error checking hash reputation: {str(e)}"
+                        message_placeholder.error(error_message, icon="")
+                        if not already_last_assistant_response(error_message):
+                            st.session_state.messages.append({"role": "assistant", "content": error_message})
+                        if advanced_memory_enabled:
+                            save_chat_history(st.session_state.session_id, st.session_state.messages)
+        # If hashes are already tagged, and there are follow-up questions, use the saved data
+        elif hasattr(agent_instance, 'is_valid_hash') and not untagged_hashes and re.search(r'<checkedhash>([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})</checkedhash>', prompt):
+            # Extract the tagged hash
+            tagged_hashes = re.findall(r'<checkedhash>([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})</checkedhash>', prompt)
+            for hash_val in tagged_hashes:
+                hash_key = hash_val.strip().lower()
+                logger.info(f"[TAGGED VT CHECK] hash_key: {hash_key}, cache keys: {list(st.session_state.checked_hashes.keys())}, prompt: {prompt}")
+                if hash_key not in st.session_state.checked_hashes:
+                    logger.info(f"[TAGGED VT CHECK] Invoking VT tool for tagged hash: {hash_key}")
+                    vt_response = check_hash_sync(hash_val)
+                    result_struct = {
+                        'result': vt_response,
+                        'timestamp': int(time.time()),
+                        'malicious': 'malicious' in str(vt_response).lower(),
+                        'threat_names': [],
+                        'categories': [],
+                        'raw': vt_response
+                    }
+                    st.session_state.checked_hashes[hash_key] = result_struct
+                    save_hash_cache(st.session_state.checked_hashes)
+                    tagged_result = re.sub(rf'{re.escape(hash_val)}', f'<checkedhash>{hash_val}</checkedhash>', str(vt_response))
+                    with st.chat_message("assistant"):
+                        st.markdown(tagged_result)
+                        if not already_last_assistant_response(tagged_result):
+                            st.session_state.messages.append({"role": "assistant", "content": tagged_result})
+                        if advanced_memory_enabled:
+                            save_chat_history(st.session_state.session_id, st.session_state.messages)
+                        st.session_state.chat_context.append({
+                            'user': prompt,
+                            'assistant': tagged_result,
+                            'entities': extract_entities(prompt, result_struct),
+                            'timestamp': int(time.time())
+                        })
+                else:
+                    logger.info(f"[TAGGED VT CHECK] Tagged hash {hash_key} found in cache. Skipping VT tool.")
+                    cached = st.session_state.checked_hashes[hash_key]
+                    tagged_result = re.sub(rf'{re.escape(hash_val)}', f'<checkedhash>{hash_val}</checkedhash>', str(cached['result']))
+                    with st.chat_message("assistant"):
+                        st.markdown(tagged_result)
+                        if not already_last_assistant_response(tagged_result):
+                            st.session_state.messages.append({"role": "assistant", "content": tagged_result})
+                        if advanced_memory_enabled:
+                            save_chat_history(st.session_state.session_id, st.session_state.messages)
+                        st.session_state.chat_context.append({
+                            'user': prompt,
+                            'assistant': tagged_result,
+                            'entities': extract_entities(prompt, cached),
+                            'timestamp': int(time.time())
+                        })
         else:
             # Get response from the agent as before
             with st.chat_message("assistant"):
@@ -443,28 +459,15 @@ if prompt:
                 message_placeholder.markdown("Thinking...")
                 try:
                     logger.info("Calling agent.run()...")
-                    #  Compress chat context for prompt 
-                    compressed_ctx = compress_context(st.session_state.chat_context)
-                    #  Advanced Memory: Prepend chat history to prompt 
-                    if advanced_memory_enabled:
-                        # Use last N messages or a summary
-                        N = 8
-                        history = st.session_state.messages[-N:]
-                        # Format history as a chat transcript
-                        history_str = "\n".join([
-                            f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]  # exclude current user prompt
-                        ])
-                        context_prompt = f"Conversation so far:\n{history_str}\nUser: {expanded_prompt}"
-                    else:
-                        context_prompt = expanded_prompt
-
-                    # RAG context
+                    N = 10  # or whatever fits your LLM's context window
+                    context_window = st.session_state.messages[-N:]
                     rag_references = []
                     rag_reference_sources = []
-                    if "rag_vectorstore" in st.session_state and st.session_state.rag_vectorstore and expanded_prompt:
-                        docs = st.session_state.rag_vectorstore.similarity_search(expanded_prompt, k=3)
+                    if "rag_vectorstore" in st.session_state and st.session_state.rag_vectorstore and prompt:
+                        docs = st.session_state.rag_vectorstore.similarity_search(prompt, k=3)
                         rag_context = "\n\n".join([doc.page_content for doc in docs])
                         if rag_context:
+                            context_window.append({"role": "assistant", "content": rag_context})
                             context_prompt = f"Context:\n{rag_context}\n\n{context_prompt}"
                             # Prepare references for UI
                             rag_references = docs
@@ -478,10 +481,9 @@ if prompt:
                                 rag_reference_sources.append(source)
 
                     #  Pass compressed chat context to LLM as part of the prompt 
-                    context_prompt = f"Compressed context: {compressed_ctx}\n\n" + context_prompt
-
-                    agent_response_text = agent_instance.run(context_prompt, hash_cache=st.session_state.checked_hashes, max_cache_size=100)
-                    logger.info(f"Agent response received.")
+                    
+                    agent_response_text = agent_instance.run(st.session_state.messages, hash_cache=st.session_state.checked_hashes, max_cache_size=100)
+                    logger.info("Agent response received.")
 
                     # Show <think>...</think> as a collapsible section if present
                     think_match = re.search(r'<think>(.*?)</think>', agent_response_text, re.DOTALL)
@@ -503,17 +505,18 @@ if prompt:
                         with st.expander("References", expanded=True):
                             st.markdown(refs_md)
 
-                    st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
+                    if not (st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant" and st.session_state.messages[-1]["content"] == agent_response_text):
+                        st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
                     if advanced_memory_enabled:
                         save_chat_history(st.session_state.session_id, st.session_state.messages)
                     #  Update chat context with this Q/A 
                     st.session_state.chat_context.append({
-                        'user': expanded_prompt,
+                        'user': prompt,
                         'assistant': agent_response_text,
-                        'entities': extract_entities(expanded_prompt),
+                        'entities': extract_entities(prompt),
                         'timestamp': int(time.time())
                     })
-                    st.session_state.chat_context = compress_context(st.session_state.chat_context)
+                    
                 except Exception as e:
                     logger.error(f"Error during agent execution: {e}", exc_info=True)
                     error_message = f"Sorry, I encountered an error processing your request: {str(e)}"
@@ -521,56 +524,7 @@ if prompt:
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
                     if advanced_memory_enabled:
                         save_chat_history(st.session_state.session_id, st.session_state.messages)
-    logger.info("Streamlit app finished processing request or waiting for input.")
-
-if prompt:
-    # Add user message to state and display it
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    logger.info(f"User input received: {prompt}")
-
-    # Save chat history if advanced memory is enabled
-    if advanced_memory_enabled:
-        save_chat_history(st.session_state.session_id, st.session_state.messages)
-
-    # Check if agent is available before proceeding
-    if not agent_instance or not agent_instance.chain:
-        st.error("Chat agent is not available. Cannot process request.", icon="⚠️")
-        logger.error("Agent instance or chain not available when processing user input.")
-        # Don't st.stop() here, let the message be displayed
-    else:
-        # If the prompt is a hash, call FastMCP directly for reputation, but only once per unique hash
-        if hasattr(agent_instance, 'is_valid_hash') and agent_instance.is_valid_hash(prompt):
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                message_placeholder.markdown("Checking hash reputation via MCP...")
-                try:
-                    hash_key = prompt.strip().lower()
-                    if hash_key in st.session_state.checked_hashes:
-                        result = st.session_state.checked_hashes[hash_key]
-                        logger.info(f"Reusing cached VT result for hash {hash_key}")
-                    else:
-                        result = check_hash_sync(prompt)
-                        st.session_state.checked_hashes[hash_key] = result
-                        logger.info(f"Queried VT for new hash {hash_key}")
-                    message_placeholder.markdown(str(result))
-                    st.session_state.messages.append({"role": "assistant", "content": str(result)})
-                    if advanced_memory_enabled:
-                        save_chat_history(st.session_state.session_id, st.session_state.messages)
-                except Exception as e:
-                    logger.error(f"Error during MCP hash check: {e}", exc_info=True)
-                    error_message = f"Sorry, error checking hash reputation: {str(e)}"
-                    message_placeholder.error(error_message, icon="💥")
-                    st.session_state.messages.append({"role": "assistant", "content": error_message})
-                    if advanced_memory_enabled:
-                        save_chat_history(st.session_state.session_id, st.session_state.messages)
-        else:
-            # Get response from the agent as before
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                message_placeholder.markdown("Thinking...")
-                try:
+                        logger.info("Streamlit app finished processing request or waiting for input.")
                     logger.info("Calling agent.run()...")
                     # RAG: Retrieve context from docs if available
                     rag_context = ""
@@ -607,8 +561,8 @@ if prompt:
                                     source = "[Unknown]"
                                 rag_reference_sources.append(source)
 
-                    agent_response_text = agent_instance.run(context_prompt, hash_cache=st.session_state.checked_hashes, max_cache_size=100)
-                    logger.info(f"Agent response received.")
+                    agent_response_text = agent_instance.run(st.session_state.messages, hash_cache=st.session_state.checked_hashes, max_cache_size=100)
+                    logger.info("Agent response received.")
 
                     # Show <think>...</think> as a collapsible section if present
                     import re
@@ -626,18 +580,11 @@ if prompt:
                     # Show RAG references if used
                     if rag_references:
                         refs_md = "\n".join([
-                            f"**[{i+1}]** ({rag_reference_sources[i]}) {doc.page_content[:120].replace(chr(10), ' ')}..." for i, doc in enumerate(rag_references)
+                            f"**[{i+1}]** ({rag_reference_sources[i]}) {doc.page_content[:120].replace(chr(10), ' ')}..."
+                            for i, doc in enumerate(rag_references)
                         ])
                         with st.expander("References", expanded=True):
                             st.markdown(refs_md)
-
-                    st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
-                    if advanced_memory_enabled:
-                        save_chat_history(st.session_state.session_id, st.session_state.messages)
-                except Exception as e:
-                    logger.error(f"Error during agent execution: {e}", exc_info=True)
-                    error_message = f"Sorry, I encountered an error processing your request: {str(e)}"
-                    message_placeholder.error(error_message, icon="💥")
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
                     if advanced_memory_enabled:
                         save_chat_history(st.session_state.session_id, st.session_state.messages)

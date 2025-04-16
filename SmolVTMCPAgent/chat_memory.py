@@ -31,19 +31,28 @@ def get_memory_path(session_id: str) -> str:
     """Return the file path for a session's memory."""
     return os.path.join(MEMORY_DIR, f"{session_id}.json")
 
-def save_chat_history(session_id: str, messages: List[Dict[str, Any]]):
-    """Persist chat history for a session as a JSON file."""
+def save_chat_history(session_id: str, messages: List[Dict[str, Any]], hash_cache: dict = None):
+    """Persist chat history and hash cache for a session as a JSON file with top-level keys."""
     path = get_memory_path(session_id)
+    data = {
+        "messages": messages,
+        "hash_cache": hash_cache if hash_cache is not None else {}
+    }
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(messages, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-def load_chat_history(session_id: str) -> List[Dict[str, Any]]:
-    """Load chat history for a session if it exists."""
+def load_chat_history(session_id: str):
+    """Load chat history and hash cache for a session if it exists. Returns a dict with keys 'messages' and 'hash_cache'."""
     path = get_memory_path(session_id)
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
+            data = json.load(f)
+            # Backward compatibility: if it's a list, treat as messages only
+            if isinstance(data, list):
+                return {"messages": data, "hash_cache": {}}
+            return data
+    return {"messages": [], "hash_cache": {}}
+
 
 def list_sessions() -> list:
     """List all session IDs with stored memory."""

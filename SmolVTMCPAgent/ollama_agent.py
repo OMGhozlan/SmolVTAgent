@@ -1,5 +1,4 @@
 import logging
-import requests
 import asyncio
 from fastmcp import Client
 from fastmcp.client.transports import SSETransport  # Use SSETransport for HTTP/SSE communication
@@ -9,10 +8,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from config import OLLAMA_MODEL_ID, OLLAMA_API_BASE # Assuming these are still in config.py
-from vt_helper import is_valid_hash, format_vt_result # Keep format_vt_result here for now
 
 import re
-from collections import OrderedDict
 
 def extract_hashes(text):
     """Extract all valid MD5, SHA1, or SHA256 hashes from the input text."""
@@ -91,14 +88,21 @@ class VirusTotalOllamaAgent:
         else:
             self.chain = None
 
-    def _call_fastmcp_tool(self, file_hash: str) -> str:
-        """Calls the FastMCP server's hash check tool using FastMCP Client."""
+    def _call_fastmcp_tool(self, file_hash: str):
+        """Calls the FastMCP server's hash check tool using FastMCP Client and always returns a dictionary if possible."""
         try:
             result = check_hash_sync(file_hash)
+            # If result is a string, try to parse as JSON, else return as-is
+            if isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                    return parsed
+                except Exception:
+                    pass
             return result
         except Exception as e:
             logger.exception(f"Unexpected error calling FastMCP tool: {e}")
-            return f"Error: An unexpected error occurred while calling the VirusTotal tool."
+            return {"error": f"An unexpected error occurred while calling the VirusTotal tool: {e}"}
 
     def _extract_family_names(self, vt_result):
         """
@@ -106,7 +110,6 @@ class VirusTotalOllamaAgent:
         Returns a list of family names (may be empty).
         """
         import re
-        import json
         family_names = set()
         # Try to parse JSON if string
         if isinstance(vt_result, str):
@@ -152,7 +155,6 @@ class VirusTotalOllamaAgent:
         """
         from fastmcp import Client
         from fastmcp.client.transports import SSETransport
-        import asyncio
         tool_input = {"family_name": family_name}
         try:
             async with Client(SSETransport("http://localhost:8000/sse")) as client:
@@ -165,67 +167,71 @@ class VirusTotalOllamaAgent:
             logger.warning(f"Failed to call Malpedia tool for {family_name}: {e}")
             return {"summary": None, "url": None, "error": str(e)}
 
-    from collections import OrderedDict
-    def run(self, user_input: str, hash_cache=None, max_cache_size=100) -> str:
-        """Process user input, checking for any hashes and summarizing results if found. If malicious, search Malpedia for family writeups. Uses LRU cache for hash results."""
+    def run(self, messages: list, hash_cache=None, max_cache_size=100) -> str:
+        """Process a list of messages (OpenAI/ChatML format) as context. If the latest user message contains hashes, process them with the tool before responding."""
         if not self.chain:
             return "Error: LLM is not initialized. Cannot process request."
 
-        if hash_cache is None:
-            hash_cache = OrderedDict()
-        elif not isinstance(hash_cache, OrderedDict):
-            hash_cache = OrderedDict(hash_cache)
+        prompt = ""
+        for m in messages:
+            prompt += f"{m['role'].capitalize()}: {m['content']}\n"
 
-        cleaned_input = user_input.strip()
-        hashes = extract_hashes(cleaned_input)
+        # Check for hashes in the latest user message only
+        latest_user_msg = next((m['content'] for m in reversed(messages) if m['role'] == 'user'), None)
+        hashes = extract_hashes(latest_user_msg) if latest_user_msg else []
+        logger.info(f"[run] Latest user message: {latest_user_msg}")
+        logger.info(f"[run] Hashes found: {hashes}")
 
-        malpedia_extras = []
-
+        # Use a cache if provided, else use a temporary dict
+        cache = hash_cache if hash_cache is not None else {}
+        tool_results = {}
         if hashes:
-            tool_results = []
             for h in hashes:
                 h_key = h.strip().lower()
-                if h_key in hash_cache:
-                    tool_result = hash_cache[h_key]
-                    hash_cache.move_to_end(h_key)
+                if h_key in cache:
+                    logger.info(f"[run] Hash {h_key} found in cache. Skipping tool call.")
+                    tool_results[h] = cache[h_key]
                 else:
-                    tool_result = self._call_fastmcp_tool(h)
-                    hash_cache[h_key] = tool_result
-                    if len(hash_cache) > max_cache_size:
-                        hash_cache.popitem(last=False)
-                tool_results.append(f"Hash `{h}`: {tool_result}")
-                # If malicious, try to extract family and search Malpedia (via MCP tool)
-                if (isinstance(tool_result, str) and ("malicious" in tool_result.lower() or "💀" in tool_result)) or (isinstance(tool_result, dict) and tool_result.get('malicious', 0) > 0):
-                    families = self._extract_family_names(tool_result)
-                    logger.debug(f"Extracted families for hash {h}: {families}")
-                    if families:
-                        for fam in families:
-                            logger.info(f"Calling Malpedia tool for family: {fam}")
-                            import asyncio
-                            malpedia_result = asyncio.run(self._call_malpedia_tool(fam))
-                            summary = malpedia_result.get("summary")
-                            url = malpedia_result.get("url")
-                            if summary:
-                                malpedia_extras.append(f"**Malpedia Writeup for {fam}:** {summary}\n[Read more on Malpedia]({url})")
-                            elif url:
-                                malpedia_extras.append(f"[Malpedia page for {fam}]({url}) (no summary found)")
-                    else:
-                        logger.info(f"No malware family extracted for hash {h}; skipping Malpedia lookup.")
-            tool_results_str = "\n".join(tool_results)
-            prompt_with_context = (
-                f"You are a malware analysis assistant. The user provided these hashes: {', '.join(hashes)}.\n"
-                f"You checked them using a tool, and the results were:\n{tool_results_str}\n"
-                f"Please summarize or inform the user based on these results."
-            )
-            logger.info("Invoking LLM with hash check context for multiple hashes.")
-            llm_response = self.chain.invoke({"input": prompt_with_context})
-            # Append Malpedia info if found
-            if malpedia_extras:
-                llm_response += "\n\n" + "\n\n".join(malpedia_extras)
-            return llm_response
+                    logger.info(f"[run] Calling VT tool for hash: {h}")
+                    vt_result = self._call_fastmcp_tool(h)
+                    # Build a cache entry that contains the raw VT response and summary fields
+                    cache_entry = {
+                        'raw': vt_result,
+                        'malicious': vt_result.get('malicious', None) if isinstance(vt_result, dict) else None,
+                        'threat_names': vt_result.get('threat_names', []) if isinstance(vt_result, dict) else [],
+                        'categories': vt_result.get('categories', []) if isinstance(vt_result, dict) else []
+                    }
+                    tool_results[h] = cache_entry
+                    cache[h_key] = cache_entry
+            import json
+            # Tag hashes in the user message after processing
+            tagged_msg = latest_user_msg
+            vt_raw_sections = []
+            for h in hashes:
+                tagged_msg = re.sub(rf'{re.escape(h)}', f'<checkedhash>{h}</checkedhash>', tagged_msg)
+                vt_data = tool_results[h]
+                vt_raw = vt_data.get('raw', vt_data) if isinstance(vt_data, dict) else vt_data
+                vt_raw_json = json.dumps(vt_raw, ensure_ascii=False, indent=2, default=str)
+                vt_raw_sections.append(f"Hash {h} VT Data:\n{vt_raw_json}")
+            # Compose context for LLM
+            vt_context = "\n\n".join(vt_raw_sections)
+            # Replace the latest user message in the prompt with tagged version and VT context
+            new_prompt = ""
+            tagged = False
+            for m in messages:
+                if m['role'] == 'user' and m['content'] == latest_user_msg and not tagged:
+                    new_prompt += f"User: {tagged_msg}\n"
+                    if vt_context:
+                        new_prompt += f"[Hash Reputation Raw Data]\n{vt_context}\n"
+                    tagged = True
+                else:
+                    new_prompt += f"{m['role'].capitalize()}: {m['content']}\n"
+            logger.info(f"[run] Prompt with tagged hashes and VT RAW context: {new_prompt}")
+            return self.chain.invoke({"input": new_prompt})
         else:
-            logger.info("No hashes detected. Invoking LLM directly.")
-            return self.chain.invoke({"input": user_input})
+            logger.info("Invoking LLM with chat history context (no hashes found).")
+            return self.chain.invoke({"input": prompt})
+
 
 
 # Helper function to get agent instance (similar to original setup) 

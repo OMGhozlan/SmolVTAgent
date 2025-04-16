@@ -15,8 +15,7 @@ import re
 load_dotenv()
 
 # Import VT helper functions AFTER loading env vars
-from vt_helper import get_file_reputation_from_vt, is_valid_hash, format_vt_result
-from config import VT_API_KEY # Ensure API key is loaded/checked
+from vt_helper import get_file_reputation_from_vt, is_valid_hash
 
 # Logging Setup 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -47,7 +46,9 @@ def check_hash_reputation(hash_input: HashInput) -> Union[Dict[str, Any], str]:
         return "Invalid hash format."
     try:
         result = get_file_reputation_from_vt(cleaned_hash)
-        logger.info(f"VT helper returned result of type: {type(result)}")
+        import json
+        pretty_result = json.dumps(result, indent=2, ensure_ascii=False) if isinstance(result, dict) else str(result)
+        logger.info(f"VT helper returned result of type: {type(result)}\nPretty VT Result:\n{pretty_result}")
         return result
     except Exception as e:
         logger.exception(f"Error while checking hash reputation: {e}")
