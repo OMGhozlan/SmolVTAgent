@@ -1,5 +1,14 @@
 streamlit
-smolagents
-litellm
 requests
 python-dotenv
+smolagents
+langchain
+langchain-community
+langchain-ollama
+langchain-text-splitters
+chromadb
+langchain-chroma
+markitdown[all]
+PyPDF2
+python-docx
+smolagents[all]

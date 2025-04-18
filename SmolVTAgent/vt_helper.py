@@ -1,13 +1,13 @@
 import streamlit as st
 import requests
 import re
-from datetime import datetime
-import logging
+from datetime import datetime, timezone
+from rich_logger import RichLogger
 
 from config import VT_API_KEY # Import the loaded key
 
 # Logger Setup 
-logger_vt = logging.getLogger(__name__)
+logger_vt = RichLogger.get_logger(__name__)
 
 # VirusTotal Helper Functions 
 
@@ -33,38 +33,109 @@ def format_vt_analysis_stats(stats):
     return ", ".join(parts) if parts else "No analysis statistics available."
 
 def format_vt_result(vt_data):
-    """Formats the VirusTotal file data dictionary into a markdown string for display."""
-    attributes = vt_data.get('attributes', {}) # Use .get for safety
-    file_id = vt_data.get('id', 'N/A') # Get ID from data dict
-
+    """Formats the VirusTotal file data dictionary into a decorated markdown report for analysts, with flexibility for extra fields."""
+    from datetime import datetime
+    attributes = vt_data.get('attributes', {})
+    file_id = vt_data.get('id', 'N/A')
     last_stats = attributes.get("last_analysis_stats", {})
     result_summary = format_vt_analysis_stats(last_stats)
     malicious_count = last_stats.get("malicious", 0)
     suspicious_count = last_stats.get("suspicious", 0)
 
-    if malicious_count > 0: status_icon, color = "💀 Malicious", "red"
-    elif suspicious_count > 0: status_icon, color = "⚠️ Suspicious", "orange"
-    else: status_icon, color = "✅ Likely Clean", "green"
+    if malicious_count > 0:
+        status_icon, color, verdict = "💀 Malicious", "red", "Malicious"
+    elif suspicious_count > 0:
+        status_icon, color, verdict = "⚠️ Suspicious", "orange", "Suspicious"
+    else:
+        status_icon, color, verdict = "✅ Likely Clean", "green", "Likely Clean"
 
     last_analysis_date_str = datetime.fromtimestamp(attributes.get("last_analysis_date", 0)).strftime('%Y-%m-%d %H:%M:%S UTC') if attributes.get("last_analysis_date") else "N/A"
     first_submission_date_str = datetime.fromtimestamp(attributes.get("first_submission_date", 0)).strftime('%Y-%m-%d %H:%M:%S UTC') if attributes.get("first_submission_date") else "N/A"
     names = attributes.get("meaningful_name", "N/A")
-    if isinstance(names, list): names = ", ".join(names) if names else "N/A"
-    elif names is None: names = "N/A"
+    if isinstance(names, list):
+        names = ", ".join(names) if names else "N/A"
+    elif names is None:
+        names = "N/A"
     vt_link = f"https://www.virustotal.com/gui/file/{file_id}"
 
+    md5 = attributes.get('md5', 'N/A')
+    sha1 = attributes.get('sha1', 'N/A')
+    sha256 = attributes.get('sha256', 'N/A')
+    file_size = attributes.get('size', 'N/A')
+    type_desc = attributes.get('type_description', 'N/A')
+    type_tag = attributes.get('type_tag', 'N/A')
+
+    # Threat names and categories (flexible fields)
+    threat_names = attributes.get('popular_threat_classification', {}).get('suggested_threat_label', None)
+    if not threat_names:
+        threat_names = attributes.get('meaningful_name', None)
+    if isinstance(threat_names, list):
+        threat_names = ", ".join(threat_names)
+    if not threat_names:
+        threat_names = "N/A"
+    categories = attributes.get('popular_threat_classification', {}).get('category', [])
+    if isinstance(categories, list):
+        categories = ", ".join(categories)
+    if not categories:
+        categories = "N/A"
+
+    # Top engines detections (flexible, show up to 3)
+    top_engines_md = ""
+    engines = attributes.get('last_analysis_results', {})
+    if engines:
+        # Sort by malicious verdicts
+        top = [ (e, v) for e, v in engines.items() if v.get('category') == 'malicious']
+        top = top[:3] if len(top) > 3 else top
+        if top:
+            top_engines_md = "\n".join([f"    - {engine}: `{result.get('result','N/A')}`" for engine, result in top])
+        else:
+            # If no malicious, show any 3 engines
+            top = list(engines.items())[:3]
+            top_engines_md = "\n".join([f"    - {engine}: `{result.get('result','N/A')}`" for engine, result in top])
+    else:
+        top_engines_md = "    - N/A"
+
+    # Extra fields (flexible for model/agent to append)
+    extra_info = ""
+    for k, v in vt_data.items():
+        if k not in {'id', 'attributes', 'type'}:
+            extra_info += f"- **{k.capitalize()}:** {v}\n"
+    for k, v in attributes.items():
+        if k not in {'md5','sha1','sha256','size','type_description','type_tag','last_analysis_stats','last_analysis_date','first_submission_date','meaningful_name','popular_threat_classification','last_analysis_results'}:
+            if isinstance(v, (str, int, float)) and v:
+                extra_info += f"- **{k.replace('_',' ').capitalize()}:** {v}\n"
+
     report = f"""
-    #### VirusTotal Report for `{file_id}`
-    
-    **Status:** :{color}[{status_icon}]
-    **Analysis Results:** {result_summary}
-    **Detected Names:** {names}
-    **MD5:** `{attributes.get('md5', 'N/A')}` | **SHA1:** `{attributes.get('sha1', 'N/A')}` | **SHA256:** `{attributes.get('sha256', 'N/A')}`
-    **File Size:** {attributes.get('size', 'N/A')} bytes | **Type:** `{attributes.get('type_description', 'N/A')}` ({attributes.get('type_tag', 'N/A')})
-    **First Seen:** {first_submission_date_str} | **Last Analysis:** {last_analysis_date_str}
-    [**View Full Report on VirusTotal**]({vt_link})
-    """
+## 🕵️‍♂️ File Reputation Report
+
+**Hash:** `{sha256}`
+
+**Verdict:**  
+<span style="color:{color}; font-weight:bold">**{verdict}**</span> ({result_summary})
+
+**First Seen:** {first_submission_date_str}  
+**Last Analysis:** {last_analysis_date_str}
+
+---
+
+### 🚩 Threat Details
+
+- **Threat Names:** {threat_names}
+- **Categories:** {categories}
+- **Top Engines:**
+{top_engines_md}
+
+---
+
+### 🔗 [View Full VirusTotal Report]({vt_link})
+
+---
+
+#### ℹ️ Additional Information
+{extra_info if extra_info else '- None'}
+"""
     return report
+
 
 def get_file_reputation_from_vt(file_hash):
     """
@@ -90,7 +161,7 @@ def get_file_reputation_from_vt(file_hash):
 
     try:
         logger_vt.debug(f"Making GET request to {url}")
-        response = requests.get(url, headers=headers, timeout=30) # Added timeout
+        response = requests.get(url, headers=headers, timeout=30, verify=False) # Added timeout
         logger_vt.debug(f"Received response with status code: {response.status_code}")
 
         # Check for specific HTTP errors

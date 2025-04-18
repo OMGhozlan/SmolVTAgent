@@ -1,10 +1,9 @@
 import os
 import streamlit as st
 from dotenv import load_dotenv
-import logging
+from rich_logger import RichLogger
 
-# Logger Setup 
-logger_config = logging.getLogger(__name__)
+logger_config = RichLogger.get_logger(__name__)
 
 # Load environment variables from .env file if it exists (for local dev)
 logger_config.debug("Attempting to load environment variables from .env file...")
@@ -39,7 +38,8 @@ def get_vt_api_key():
 
 # Constants 
 VT_API_KEY = get_vt_api_key()
-OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "ollama_chat/qwen2.5:7b") # Default model
+# IMPORTANT: The model name must be prefixed with 'ollama/' for LiteLLM compatibility
+OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "ollama/qwen2.5:7b") # Default model, prefixed with 'ollama/' for LiteLLM compatibility
 OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://localhost:11434") # Default Ollama URL
 
 # Log final config values (except the sensitive key itself)

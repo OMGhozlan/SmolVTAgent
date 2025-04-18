@@ -1,87 +1,77 @@
-# SmolVTAgent: Chat & File Reputation Checker
+# SmolVTAgent
 
-This is a Streamlit application that provides a conversational interface powered by a local Ollama Language Model (LLM). It includes a tool that allows the LLM to check the reputation of file hashes (MD5, SHA1, SHA256) using the VirusTotal API v3.
+SmolVTAgent is a Streamlit web application that provides a conversational AI interface powered by a local Ollama LLM (e.g., Qwen 2.5 7B, Llama 3). It features a tool for checking the reputation of file hashes (MD5, SHA1, SHA256) via the VirusTotal API, and can explain or summarize any text you provide. The agent uses SmolAgents for robust, multi-step tool use and reasoning.
+
+---
 
 ## Features
+- **Conversational AI:** Chat with a local Ollama LLM (customizable model).
+- **Explain or Summarize Any Text:** Paste or type any text (e.g., error message, technical report, or documentation) and the agent will use the LLM to explain or summarize it in simple terms.
+- **VirusTotal Integration:** Ask about a file hash—SmolVTAgent queries VirusTotal and summarizes the results.
+- **Modern Agentic Pattern:** Uses SmolAgents for tool calls, ensuring reliability and scalability.
+- **Dynamic Tool Handling:** The agent automatically tracks and manages its available tools.
+- **Configurable:** API keys, model, and endpoints are set via `.env` or environment variables.
+- **Logging:** Logs to both file and console for easy troubleshooting.
 
-*   **Conversational AI:** Chat with an Ollama LLM (e.g., Qwen 2.5 7B, Llama 3.1) running locally.
-*   **VirusTotal Integration:** Ask the agent about a file hash, and it will use a tool to query the VirusTotal API.
-*   **Formatted Reports:** Displays a detailed, formatted summary of the VirusTotal report within the chat interface.
-*   **Configuration:** Uses environment variables or Streamlit secrets for easy setup of API keys and model details.
-*   **Logging:** Basic logging implemented for troubleshooting.
+---
 
-## Setup
+## Setup Instructions
 
 ### Prerequisites
-
-*   Python 3.8+
-*   Ollama installed and running locally ([https://ollama.com/](https://ollama.com/))
-*   An Ollama model pulled (e.g., `ollama pull qwen2.5:7b`)
-*   A VirusTotal API Key (Free tier available: [https://www.virustotal.com/](https://www.virustotal.com/))
+- Python 3.10+
+- [Ollama](https://ollama.com/) installed and running locally
+- A VirusTotal API Key ([get one free](https://www.virustotal.com/))
+- (Recommended) Create and activate a Python virtual environment
 
 ### Installation
-
-1.  **Clone the repository (or download the files):**
-    ```bash
-    # If using git
+1. **Clone or Download the Repository:**
+    ```sh
     # git clone <repository-url>
-    # cd SmolVTAgent
+    cd SmolVTAgent
     ```
-
-2.  **Create and activate a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    # On Windows
-    .\venv\Scripts\activate
-    # On macOS/Linux
-    # source venv/bin/activate
-    ```
-
-3.  **Install dependencies:**
-    ```bash
+2. **Install Python dependencies:**
+    ```sh
     pip install -r requirements.txt
     ```
-
-4.  **Configuration:**
-    *   Create a file named `.env` in the project root directory (`h:\SmolVTAgent`).
-    *   Add the following variables, replacing the placeholder values:
-        ```dotenv
-        # .env
-        VT_API_KEY="YOUR_VIRUSTOTAL_API_KEY"
-        OLLAMA_MODEL_ID="ollama_chat/qwen2.5:7b" # Or your desired Ollama model ID prefixed with ollama_chat/
-        OLLAMA_API_BASE="http://localhost:11434" # Default Ollama API endpoint
-        ```
-    *   **Note:** For deployed Streamlit applications, you can use Streamlit Secrets instead of the `.env` file for `VT_API_KEY`.
-
-## How to Run
-
-1.  Ensure your Ollama server is running.
-2.  Make sure you are in the project's root directory (`h:\SmolVTAgent`) with your virtual environment activated.
-3.  Run the Streamlit application:
-    ```bash
+3. **Configure Environment:**
+    - Copy `.env.example` to `.env` and fill in your API keys and model settings.
+    - Required env variables:
+        - `VT_API_KEY` (VirusTotal)
+        - `OLLAMA_MODEL_ID`, `OLLAMA_API_BASE` (Ollama LLM)
+4. **Start the app:**
+    ```sh
     streamlit run app.py
     ```
-4.  Open the local URL provided by Streamlit (usually `http://localhost:8501`) in your web browser.
 
-## Key Dependencies
+---
 
-*   [Streamlit](https://streamlit.io/): For creating the web application interface.
-*   [SmolAgents](https://github.com/smol-ai/Smol-Developer): Framework for creating LLM agents with tools.
-*   [LiteLLM](https://github.com/BerriAI/litellm): Interface for interacting with various LLMs, including Ollama.
-*   [Requests](https://requests.readthedocs.io/en/latest/): For making HTTP requests to the VirusTotal API.
-*   [python-dotenv](https://github.com/theskumar/python-dotenv): For loading environment variables from the `.env` file.
+## How to Use
+- **Explain/Summarize:** Type or paste any text (e.g., error message, technical description, or documentation) and ask for an explanation or summary.
+- **File Hash Reputation:** Enter a file hash (MD5, SHA1, or SHA256) to check its safety using VirusTotal.
+- **Conversational Context:** The agent can answer follow-up questions and refer to previous results in the chat.
+
+---
 
 ## Project Structure
+```
+SmolVTAgent/
+├── app.py               # Streamlit app (UI, chat, health checks)
+├── agent_setup.py       # LLM agent logic and tool setup
+├── config.py            # Loads API keys and config
+├── requirements.txt     # Python dependencies
+├── .env                 # Environment variables (not committed)
+└── app.log              # Log file
+```
 
-```
-h:\SmolVTAgent\
-├── .env          # Local environment variables (API Key, Model ID) - Create this!
-├── .gitignore    # Git ignore rules
-├── app.log       # Log file generated during runtime
-├── app.py        # Main Streamlit application logic and UI
-├── agent_setup.py # Defines the SmolAgent tool and agent initialization
-├── config.py     # Handles loading configuration (API keys, model settings)
-├── vt_helper.py  # Functions for VirusTotal API interaction and result formatting
-├── requirements.txt # Python package dependencies
-└── README.md     # This file
-```
+---
+
+## Troubleshooting
+- **Ollama Errors:** Make sure Ollama is installed, running, and the model is available. You can select the active model from the sidebar dropdown in the app UI.
+- **API Key Issues:** Confirm your VirusTotal API key is valid and not rate-limited.
+- **Cache Issues:** If you notice stale or incorrect hash results, try deleting `hash_cache.json` and restarting the application.
+- **Logs:** Check `app.log` for detailed error messages.
+
+---
+
+## License
+MIT License. See LICENSE file for details.
