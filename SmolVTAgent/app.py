@@ -370,7 +370,48 @@ if prompt:
             main, _ = extract_think_blocks(collected)
             main_response = main.strip() if main.strip() else ""
 
-            # Track last successful tool result
+            # Enhanced Output Handling for CheckFileHashReputationTool
+            if not hasattr(st.session_state, 'checkreputation_output'):
+                st.session_state.checkreputation_output = None
+
+            # Robust VirusTotal Report Concatenation
+            # Detect if CheckFileHashReputationTool was called and capture its output
+            if "Calling tool: 'check_file_hash_reputation_tool'" in collected:
+                st.session_state.checkreputation_output = main_response
+
+            # LOGGING: Tools Called
+            # Dynamically get known_tools from the agent
+            if hasattr(agent_instance, 'tools') and isinstance(agent_instance.tools, dict):
+                known_tools = list(agent_instance.tools.keys())
+            else:
+                known_tools = []
+            # Find which tools were called in this response
+            tools_called = [tool_name for tool_name in known_tools if f"Calling tool: '{tool_name}'" in collected]
+            if tools_called:
+                logger.info(f"Tools called in this response: {tools_called}")
+            else:
+                logger.info("No tools called in this response.")
+
+            def is_new_hash_message():
+                if len(st.session_state.messages) >= 2:
+                    last_user = st.session_state.messages[-2]
+                    return last_user["role"] == "user" and is_valid_hash(last_user["content"].strip())
+                return False
+
+            # Only clear checkreputation_output if a new valid hash is submitted and tool was NOT called
+            if is_new_hash_message() and "Calling tool: 'check_file_hash_reputation_tool'" not in collected:
+                st.session_state.checkreputation_output = None
+
+            # Always prepend the last VT report to any LLM output, unless the tool just ran
+            if st.session_state.checkreputation_output:
+                if main_response and main_response != st.session_state.checkreputation_output:
+                    concatenated_response = f"{st.session_state.checkreputation_output}\n\n{main_response}"
+                else:
+                    concatenated_response = st.session_state.checkreputation_output
+            else:
+                concatenated_response = main_response
+
+            # Track last successful tool result (legacy)
             if not hasattr(st.session_state, 'last_tool_result'):
                 st.session_state.last_tool_result = None
 
@@ -405,12 +446,13 @@ if prompt:
                     main_response = "Sorry, the tool requested is not supported. Please try again with a supported action."
                 logger.warning("Unsupported tool requested by model. User notified.")
 
-            if main_response:
-                message_placeholder.markdown(main_response)
-                logger.info(f"Final assistant response streamed to UI: {main_response}")
+            # Always display the concatenated CheckFileHashReputationTool output (if present) and any following output
+            if concatenated_response:
+                message_placeholder.markdown(concatenated_response, unsafe_allow_html=True)
+                logger.info(f"Final assistant response streamed to UI: {concatenated_response}")
             else:
                 logger.warning("Agent response was empty after processing.")
-            agent_response_text = main_response
+            agent_response_text = concatenated_response
             logger.info("Agent response collected and ready for post-processing.")
 
             # Show RAG references if available

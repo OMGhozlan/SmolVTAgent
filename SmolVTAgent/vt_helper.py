@@ -34,7 +34,6 @@ def format_vt_analysis_stats(stats):
 
 def format_vt_result(vt_data):
     """Formats the VirusTotal file data dictionary into a decorated markdown report for analysts, with flexibility for extra fields."""
-    from datetime import datetime
     attributes = vt_data.get('attributes', {})
     file_id = vt_data.get('id', 'N/A')
     last_stats = attributes.get("last_analysis_stats", {})
@@ -49,8 +48,15 @@ def format_vt_result(vt_data):
     else:
         status_icon, color, verdict = "✅ Likely Clean", "green", "Likely Clean"
 
-    last_analysis_date_str = datetime.fromtimestamp(attributes.get("last_analysis_date", 0)).strftime('%Y-%m-%d %H:%M:%S UTC') if attributes.get("last_analysis_date") else "N/A"
-    first_submission_date_str = datetime.fromtimestamp(attributes.get("first_submission_date", 0)).strftime('%Y-%m-%d %H:%M:%S UTC') if attributes.get("first_submission_date") else "N/A"
+    # Format all timestamps in UTC and label as such
+    last_analysis_date_str = (
+        datetime.fromtimestamp(attributes.get("last_analysis_date", 0), tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        if attributes.get("last_analysis_date") else "N/A"
+    )
+    first_submission_date_str = (
+        datetime.fromtimestamp(attributes.get("first_submission_date", 0), tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        if attributes.get("first_submission_date") else "N/A"
+    )
     names = attributes.get("meaningful_name", "N/A")
     if isinstance(names, list):
         names = ", ".join(names) if names else "N/A"
@@ -103,7 +109,11 @@ def format_vt_result(vt_data):
     for k, v in attributes.items():
         if k not in {'md5','sha1','sha256','size','type_description','type_tag','last_analysis_stats','last_analysis_date','first_submission_date','meaningful_name','popular_threat_classification','last_analysis_results'}:
             if isinstance(v, (str, int, float)) and v:
-                extra_info += f"- **{k.replace('_',' ').capitalize()}:** {v}\n"
+                if 'date' in k.lower() and isinstance(v, int):
+                    v_fmt = datetime.fromtimestamp(v, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    extra_info += f"- **{k.replace('_',' ').capitalize()}:** {v_fmt}\n"
+                else:
+                    extra_info += f"- **{k.replace('_',' ').capitalize()}:** {v}\n"
 
     report = f"""
 ## 🕵️‍♂️ File Reputation Report
@@ -185,7 +195,7 @@ def get_file_reputation_from_vt(file_hash):
              return f"Error: Received unexpected response format from VirusTotal for hash {cleaned_hash}."
 
         logger_vt.info(f"Successfully retrieved VT data for hash {cleaned_hash}. Returning raw data dict.")
-        return vt_data
+        return format_vt_result(vt_data)
 
     except requests.exceptions.HTTPError as e:
         # Handle errors raised by raise_for_status() that weren't caught above

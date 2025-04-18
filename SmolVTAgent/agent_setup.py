@@ -1,5 +1,6 @@
 import streamlit as st
-from smolagents import ToolCallingAgent, LiteLLMModel, Tool, tool
+from smolagents import ToolCallingAgent, LiteLLMModel, Tool
+from smolagents import PromptTemplates, ManagedAgentPromptTemplate, FinalAnswerPromptTemplate
 from rich_logger import RichLogger
 from typing import Union, Dict, Any
 
@@ -101,12 +102,11 @@ class CheckFileHashReputationTool(Tool):
             return f"Input '{file_hash}' is not a valid MD5, SHA1, or SHA256 hash. Cannot check reputation."
         logger_agent.info(f"Calling VT helper for hash: {cleaned_hash}")
         result = get_file_reputation_from_vt(cleaned_hash)
-        if isinstance(result, dict):
+        if isinstance(result, str):
+            logger_agent.info(f"VT helper returned a string for {cleaned_hash}: {result}")
+            return result
+        elif isinstance(result, dict):
             logger_agent.info(f"VT helper returned a dictionary for {cleaned_hash}. Keys: {list(result.keys())}")
-            from vt_helper import format_vt_result
-            return format_vt_result(result)
-        elif isinstance(result, str):
-            logger_agent.info(f"VT helper returned an error string for {cleaned_hash}: {result}")
             return result
         else:
             logger_agent.warning(f"VT helper returned an unexpected type for {cleaned_hash}: {type(result)}")
@@ -132,25 +132,40 @@ def get_chat_agent():
             "Your responsibilities include: \n"
             "- Providing expert analysis on malware, threat intelligence, digital forensics, incident response, and security operations.\n"
             "- Using tools ONLY when the user asks for an explanation, or when the text is complex, technical, or cybersecurity-related.\n"
+            "- When a tool provides a formatted markdown report (such as from VirusTotal), ALWAYS display the tool's output verbatim at the TOP of your response. If you need to add commentary or a summary, append it BELOW the tool output, and NEVER alter or reformat the tool's markdown.\n"
             "- NEVER use tools for greetings, obvious language, or simple conversational input.\n"
             "- For general conversation or greetings, respond naturally without invoking tools.\n"
             "- Clearly outline your actions and reasoning step-by-step when using tools.\n"
             "- If you are unsure whether to use a tool, ask a clarifying question first.\n"
+        )        
+        # ManagedAgentPromptTemplate and FinalAnswerPromptTemplate can be customized as needed
+        prompt_templates = PromptTemplates(
+            system_prompt=system_prompt,
+            managed_agent=ManagedAgentPromptTemplate(
+                task="{task}",
+                report="{report}"
+            ),
+            final_answer=FinalAnswerPromptTemplate(
+                pre_messages="{action_output}\n\n",
+                post_messages="{llm_output}"
+            )
         )
         ollama_model = LiteLLMModel(
             model_id=OLLAMA_MODEL_ID,
             api_base=OLLAMA_API_BASE,
+            num_ctx=8192,
             system_prompt=system_prompt
+        )
+        agent = ToolCallingAgent(
+            tools=[check_file_hash_reputation_tool, malpedia_family_writeup_tool, explain_text_tool],
+            model=ollama_model,
+            max_steps=7,
+            prompt_templates=prompt_templates
         )
         # Log the system prompt for debugging
         logger_agent.info(f"System prompt being sent to model:\n{system_prompt}")
         # Attach the model instance to the tool so it can use it in forward()
         explain_text_tool.model = ollama_model
-        agent = ToolCallingAgent(
-            tools=[check_file_hash_reputation_tool, malpedia_family_writeup_tool, explain_text_tool],
-            model=ollama_model,
-            max_steps=7
-        )
         logger_agent.info("SmolAgents ToolCallingAgent initialized successfully.")
         return agent
     except Exception as e:
